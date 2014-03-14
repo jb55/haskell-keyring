@@ -55,6 +55,13 @@ SERVICE = 'lunaryorn/marmalade_upload'
 PACKAGE_MIMETYPES = set(['application/x-tar', 'text/x-lisp'])
 
 
+class BadRequestError(Exception):
+    pass
+
+class NoPermissionError(Exception):
+    pass
+
+
 class Marmalade(object):
 
     BASE_URL = 'http://marmalade-repo.org/v1'
@@ -74,8 +81,29 @@ class Marmalade(object):
     def login(self, password):
         data = {'name': self.username, 'password': password}
         response = self.session.post(self._endpoint('/users/login'), data=data)
-        response.raise_for_status()
+        if response.status_code == 400:
+            raise BadRequestError()
+        else:
+            response.raise_for_status()
         self.token = response.json()['token']
+
+    def upload_package(self, filename):
+        with open(filename, 'rb') as source:
+            mimetype = subprocess.check_output(
+                ['file', '--brief', '--mime-type', filename]).strip()
+            if mimetype not in PACKAGE_MIMETYPES:
+                raise ValueError('Invalid mimetype: {0}, expected on of {1}'.format(
+                    mimetype, ', '.join(sorted(PACKAGE_MIMETYPES))))
+            data = {'name': self.username, 'token': self.token}
+            files = {'package': source}
+            response = self.session.post(
+                self._endpoint('/packages'), data=data, files=files)
+            if response.status_code == 400:
+                raise BadRequestError
+            elif response.status_code == 403:
+                raise NoPermissionError
+            else:
+                response.raise_for_status()
 
 
 def verify_package(filename):
@@ -120,18 +148,20 @@ def main():
             return
         try:
             marmalade.login(password)
-        except requests.exceptions.HTTPError as error:
-            response = getattr(error, 'response', None)
-            if response is not None and response.status_code == 400:
-                sys.exit('Bad request. Username or password invalid')
-            else:
-                raise
+        except BadRequestError:
+            sys.exit('Bad request. Username or password invalid!')
 
     if not marmalade.token:
         sys.exit('Login failed!')
 
     set_token(args.username, marmalade.token)
-    print(marmalade.token)
+
+    try:
+        marmalade.upload_package(args.filename)
+    except BadRequestError:
+        sys.exit('Bad request. {0} is no valid package!'.format(args.filename))
+    except NoPermissionError:
+        sys.exit('No permission to upload {0}'.format(args.filename))
 
 
 if __name__ == '__main__':

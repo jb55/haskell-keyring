@@ -32,24 +32,76 @@ if sys.version_info[:2] != (2, 7):
     sys.exit('This script needs Python 2.7!')
 
 
+import os
 import getpass
 import subprocess
+from getpass import getpass
 from argparse import ArgumentParser
 
+try:
+    import requests
+except ImportError:
+    sys.exit('Requests missing.  Install with pip install --user requests')
 
-PACKAGE_MIMETYPES = set('application/x-tar', 'text/x-lisp')
+try:
+    import keyring
+except ImportError:
+    keyring = None
+    print('keyring not available.  Token storage is not available!',
+          file=sys.stderr)
+
+
+SERVICE = 'lunaryorn/marmalade_upload'
+PACKAGE_MIMETYPES = set(['application/x-tar', 'text/x-lisp'])
+
+
+class Marmalade(object):
+
+    BASE_URL = 'http://marmalade-repo.org/v1'
+
+    def __init__(self, username, token=None):
+        self.session = requests.Session()
+        self.session.headers.update(
+            {'Accept': 'application/json',
+             'User-Agent': SERVICE})
+        self.username = username
+        self.base_url = self.BASE_URL
+        self.token = token
+
+    def _endpoint(self, endpoint):
+        return self.base_url + endpoint
+
+    def login(self, password):
+        data = {'name': self.username, 'password': password}
+        response = self.session.post(self._endpoint('/users/login'), data=data)
+        response.raise_for_status()
+        self.token = response.json()['token']
 
 
 def verify_package(filename):
-    mimetype = subprocess.check_output(['file', '--brief', '--mime-type',
-                                        filename])
+    os.stat(filename)           # To check for existence
+    mimetype = subprocess.check_output(
+        ['file', '--brief', '--mime-type', filename]).strip()
     if mimetype not in PACKAGE_MIMETYPES:
         raise ValueError('Invalid mimetype: {0}, expected on of {1}'.format(
             mimetype, ', '.join(sorted(PACKAGE_MIMETYPES))))
 
 
+def get_token(username):
+    if keyring:
+        return keyring.get_password(SERVICE, username)
+    else:
+        return None
+
+
+def set_token(username, token):
+    if keyring:
+        keyring.set_password(SERVICE, username, token)
+
+
 def main():
     parser = ArgumentParser(description='Upload packages to Marmalade')
+    parser.add_argument('username', help='Your Marmalade username')
     parser.add_argument('filename', help='The package to upload')
 
     args = parser.parse_args()
@@ -58,6 +110,28 @@ def main():
         verify_package(args.filename)
     except ValueError as error:
         sys.exit('{0} is not a valid package: {1}'.format(args.filename, error))
+    except OSError as error:
+        sys.exit(str(error))
+
+    marmalade = Marmalade(args.username, token=get_token(args.username))
+    if not marmalade.token:
+        password = getpass('Password (never stored): ')
+        if not password:
+            return
+        try:
+            marmalade.login(password)
+        except requests.exceptions.HTTPError as error:
+            response = getattr(error, 'response', None)
+            if response is not None and response.status_code == 400:
+                sys.exit('Bad request. Username or password invalid')
+            else:
+                raise
+
+    if not marmalade.token:
+        sys.exit('Login failed!')
+
+    set_token(args.username, marmalade.token)
+    print(marmalade.token)
 
 
 if __name__ == '__main__':

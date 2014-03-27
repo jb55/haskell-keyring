@@ -1,168 +1,322 @@
-#!/usr/bin/env python
-# -*- coding: utf-8; -*-
-# Copyright (c) 2014 Sebastian Wiesner <lunaryorn@gmail.com>
+#!/usr/bin/env runhaskell
 
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
+-- Copyright (c) 2014 Sebastian Wiesner <lunaryorn@gmail.com>
 
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
+-- Permission is hereby granted, free of charge, to any person obtaining a copy
+-- of this software and associated documentation files (the "Software"), to deal
+-- in the Software without restriction, including without limitation the rights
+-- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+-- copies of the Software, and to permit persons to whom the Software is
+-- furnished to do so, subject to the following conditions:
 
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-# THE SOFTWARE.
+-- The above copyright notice and this permission notice shall be included in
+-- all copies or substantial portions of the Software.
 
+-- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+-- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+-- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+-- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+-- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+-- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+-- THE SOFTWARE.
 
-"""Upload files to Marmalade."""
+-- Upload packages to Marmalade.
+--
+-- Requires: cmdargs
+--
+-- Install these with: cabal install cmdargs aeson http-client http-client-multipart aeson
 
-from __future__ import print_function, unicode_literals
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE OverloadedStrings #-}
 
+import Prelude hiding (mapM_)
+import Control.Applicative ((<$>))
+import Control.Exception (bracket)
+import Control.Monad (liftM,mzero,void)
+import Control.Monad.IO.Class (MonadIO, liftIO)
+import Data.Foldable (mapM_)
+import Data.Aeson (FromJSON,parseJSON
+                  ,Value(Object),(.:)
+                  ,decode)
+import qualified Data.ByteString.UTF8 as UTF8
+import Text.Printf (printf)
+import qualified System.Info as SI
+import qualified System.IO as IO
+import System.Environment (getProgName,getEnv)
+import System.Directory (getPermissions)
+import System.Process (readProcessWithExitCode
+                      ,createProcess,waitForProcess,proc)
+import System.Exit (ExitCode(ExitSuccess,ExitFailure),exitWith)
+import System.Console.CmdArgs (Data,Typeable
+                              ,cmdArgs,(&=)
+                              ,def,argPos,typ,help
+                              ,details,summary,program)
+import Network (withSocketsDo)
+import Network.HTTP.Client (Manager,defaultManagerSettings,withManager
+                           ,httpLbs
+                           ,Request,parseUrl,requestHeaders,urlEncodedBody
+                           ,responseBody)
+import Network.HTTP.Client.MultipartFormData
+import Network.HTTP.Types.Header (hUserAgent)
 
-import sys
+-- Program information
 
-if sys.version_info[:2] != (2, 7):
-    sys.exit('This script needs Python 2.7!')
+appName :: String
+appName = "marmalade-upload"
 
+appVersion :: String
+appVersion = "0.1"
 
-import os
-import getpass
-import subprocess
-from getpass import getpass
-from argparse import ArgumentParser
+appService :: String
+appService = "lunaryorn/" ++ appName
 
-try:
-    import requests
-except ImportError:
-    sys.exit('Requests missing.  Install with pip install --user requests')
+appUserAgent :: String
+appUserAgent = appService ++ "/" ++ appVersion
 
-try:
-    import keyring
-except ImportError:
-    keyring = None
-    print('keyring not available.  Token storage is not available!',
-          file=sys.stderr)
+-- CLI tools
 
+withEcho :: Bool -> IO a -> IO a
+withEcho echo action = bracket (IO.hGetEcho IO.stdin)
+                       (IO.hSetEcho IO.stdin)
+                       (const $ IO.hSetEcho IO.stdin echo >> action)
 
-SERVICE = 'lunaryorn/marmalade_upload'
-PACKAGE_MIMETYPES = set(['application/x-tar', 'text/x-lisp'])
+askPassword :: String -> IO String
+askPassword prompt = do
+  putStr prompt
+  IO.hFlush IO.stdout
+  password <- withEcho False getLine
+  putChar '\n'
+  return password
 
+-- Process tools
 
-class BadRequestError(Exception):
-    pass
+callProcess :: String -> [String] -> IO ()
+callProcess executable args = do
+  (_, _, _, handle) <- createProcess (proc executable args)
+  exitCode <- waitForProcess handle
+  case exitCode of
+    ExitSuccess -> return ()
+    ExitFailure code ->
+        let cmd = executable ++ " " ++ unwords args in
+        ioError (userError (printf "%s (exit code %d)" cmd code))
 
-class NoPermissionError(Exception):
-    pass
+checkOutput :: String -> [String] -> IO (Either (Int, String) String)
+checkOutput executable args = do
+  output <- readProcessWithExitCode executable args []
+  return $ case output of
+             (ExitSuccess, stdout, _)      -> Right stdout
+             (ExitFailure code, _, stderr) -> Left (code, stderr)
 
+-- Token storage
 
-class Marmalade(object):
+getTokenDarwin :: Username -> IO (Maybe Token)
+getTokenDarwin (Username username) = do
+    output <- checkOutput "security" ["find-generic-password", "-w"
+                                     ,"-a", username
+                                     ,"-s", appService]
+    return $ case output of
+               Left _ -> Nothing -- The item didn't exist
+               Right stdout -> Just (Token (head (lines stdout)))
 
-    BASE_URL = 'http://marmalade-repo.org/v1'
+setTokenDarwin :: Username -> Token -> IO ()
+setTokenDarwin (Username username) (Token token) =
+    callProcess "security" ["add-generic-password"
+                           ,"-a", username
+                           ,"-s", appService
+                           ,"-w", token
+                           ,"-U"
+                           ,"-l", "Marmalade access token"]
 
-    def __init__(self, username, token=None):
-        self.session = requests.Session()
-        self.session.headers.update(
-            {'Accept': 'application/json',
-             'User-Agent': SERVICE})
-        self.username = username
-        self.base_url = self.BASE_URL
-        self.token = token
+callKWallet :: String -> [String] -> IO (Maybe String)
+callKWallet method args = do
+  output <-  checkOutput "qdbus-qt4" (["org.kde.kwalletd"
+                                      ,"/modules/kwalletd"
+                                      ,method] ++ args)
+  case output of
+    Left _       -> print output >> return Nothing
+    Right stdout -> return $ Just (head (lines stdout))
 
-    def _endpoint(self, endpoint):
-        return self.base_url + endpoint
+openNetworkKWallet :: IO (Maybe String)
+openNetworkKWallet = do
+  walletName <- callKWallet "networkWallet" []
+  maybe (return Nothing) openWallet walletName
+    where
+      openWallet name = callKWallet "open" [name, "0", appService]
 
-    def login(self, password):
-        data = {'name': self.username, 'password': password}
-        response = self.session.post(self._endpoint('/users/login'), data=data)
-        if response.status_code == 400:
-            raise BadRequestError()
-        else:
-            response.raise_for_status()
-        self.token = response.json()['token']
+closeKWallet :: String -> IO ()
+closeKWallet handle = void $ callKWallet "close" [handle, appService]
 
-    def upload_package(self, filename):
-        with open(filename, 'rb') as source:
-            mimetype = subprocess.check_output(
-                ['file', '--brief', '--mime-type', filename]).strip()
-            if mimetype not in PACKAGE_MIMETYPES:
-                raise ValueError('Invalid mimetype: {0}, expected on of {1}'.format(
-                    mimetype, ', '.join(sorted(PACKAGE_MIMETYPES))))
-            data = {'name': self.username, 'token': self.token}
-            files = {'package': source}
-            response = self.session.post(
-                self._endpoint('/packages'), data=data, files=files)
-            if response.status_code == 400:
-                raise BadRequestError
-            elif response.status_code == 403:
-                raise NoPermissionError
-            else:
-                response.raise_for_status()
+withLocalKWallet :: (String -> IO (Maybe a)) -> IO (Maybe a)
+withLocalKWallet action = bracket openNetworkKWallet close act
+    where
+      act = maybe (return Nothing) action
+      close = maybe (return ()) closeKWallet
 
+getKWalletKey :: Username -> String
+getKWalletKey (Username username) = username ++ "@" ++ appService
 
-def verify_package(filename):
-    os.stat(filename)           # To check for existence
-    mimetype = subprocess.check_output(
-        ['file', '--brief', '--mime-type', filename]).strip()
-    if mimetype not in PACKAGE_MIMETYPES:
-        raise ValueError('Invalid mimetype: {0}, expected on of {1}'.format(
-            mimetype, ', '.join(sorted(PACKAGE_MIMETYPES))))
+getTokenKDE :: Username -> IO (Maybe Token)
+getTokenKDE username = withLocalKWallet getPassword
+      where
+        getPassword handle = do
+          password <- callKWallet "readPassword" [handle, "Passwords"
+                                                 ,getKWalletKey username
+                                                 ,appService]
+          return $ case password of
+                     Nothing -> Nothing
+                     Just "" -> Nothing
+                     Just t  -> Just $ Token t
 
+setTokenKDE :: Username -> Token -> IO ()
+setTokenKDE username (Token token) = void $ withLocalKWallet setPassword
+    where
+      setPassword handle = callKWallet "writePassword" [handle
+                                                       ,"Passwords"
+                                                       ,getKWalletKey username
+                                                       ,token
+                                                       ,appService]
 
-def get_token(username):
-    if keyring:
-        return keyring.get_password(SERVICE, username)
-    else:
-        return None
+tokenProvider :: IO (Username -> IO (Maybe Token), Username -> Token -> IO ())
+tokenProvider = case SI.os of
+                  "darwin" -> return (getTokenDarwin, setTokenDarwin)
+                  "linux" -> do
+                             desktop <- getEnv "XDG_CURRENT_DESKTOP"
+                             return $ case desktop of
+                               "KDE" -> (getTokenKDE, setTokenKDE)
+                               _ -> dummy
+                  _ -> return dummy
+    where
+      dummy = (\_ -> return Nothing, \_ _ -> return ())
 
+getToken :: Username -> IO (Maybe Token)
+getToken username = do
+  (get, _) <- tokenProvider
+  get username
 
-def set_token(username, token):
-    if keyring:
-        keyring.set_password(SERVICE, username, token)
+setToken :: Username -> Token -> IO ()
+setToken username token = do
+  (_, set) <- tokenProvider
+  set username token
 
+-- Marmalade access
 
-def main():
-    parser = ArgumentParser(description='Upload packages to Marmalade')
-    parser.add_argument('username', help='Your Marmalade username')
-    parser.add_argument('filename', help='The package to upload')
+newtype Username = Username String deriving (Show, Eq)
+newtype Token = Token String deriving (Show, Eq)
 
-    args = parser.parse_args()
+instance FromJSON Token where
+    parseJSON (Object o) = Token <$> (o .: "token")
+    parseJSON _          = mzero
 
-    try:
-        verify_package(args.filename)
-    except ValueError as error:
-        sys.exit('{0} is not a valid package: {1}'.format(args.filename, error))
-    except OSError as error:
-        sys.exit(str(error))
+data Upload = Upload { uploadMessage :: String }
 
-    marmalade = Marmalade(args.username, token=get_token(args.username))
-    if not marmalade.token:
-        password = getpass('Password (never stored): ')
-        if not password:
-            return
-        try:
-            marmalade.login(password)
-        except BadRequestError:
-            sys.exit('Bad request. Username or password invalid!')
+instance FromJSON Upload where
+    parseJSON (Object o) = Upload <$> (o .: "message")
 
-    if not marmalade.token:
-        sys.exit('Login failed!')
+data Auth = Auth { authUsername :: Username
+                 , authToken :: Token }
+          deriving (Show, Eq)
 
-    set_token(args.username, marmalade.token)
+getAuth :: Username -> IO (Maybe Auth)
+getAuth username = do
+  token <- getToken username
+  return $ fmap (Auth username) token
 
-    try:
-        marmalade.upload_package(args.filename)
-    except BadRequestError:
-        sys.exit('Bad request. {0} is no valid package!'.format(args.filename))
-    except NoPermissionError:
-        sys.exit('No permission to upload {0}'.format(args.filename))
+marmaladeURL :: String
+marmaladeURL = "http://marmalade-repo.org"
 
+makeRequest :: String -> IO Request
+makeRequest endpoint = do
+  initReq <- parseUrl (marmaladeURL ++ endpoint)
+  return initReq { requestHeaders = [(hUserAgent, UTF8.fromString appUserAgent)] }
 
-if __name__ == '__main__':
-    main()
+login :: Manager -> Username -> IO (Maybe Auth)
+login manager (Username username) = do
+  password <- askPassword (printf "Marmalade password for %s (never stored): "
+                                           username)
+  request <- liftM (urlEncodedBody [("name", UTF8.fromString username)
+                                   ,("password", UTF8.fromString password)])
+             (makeRequest "/v1/users/login")
+  response <- httpLbs request manager
+  let token = decode (responseBody response)
+  liftIO $ mapM_ (setToken (Username username)) token
+  return$ fmap (Auth (Username username)) token
+
+uploadPackage :: Manager -> Auth -> FilePath -> IO (Maybe Upload)
+uploadPackage manager auth package = do
+  let (Username username) = authUsername auth
+  let (Token token) = authToken auth
+  request <- makeRequest "/v1/packages" >>=
+             formDataBody [partBS "name" (UTF8.fromString username)
+                          ,partBS "token" (UTF8.fromString token)
+                          ,partFileSource "package" package]
+  response <- httpLbs request manager
+  return (decode (responseBody response))
+
+-- Package handling
+
+packageMimeTypes :: [String]
+packageMimeTypes = ["application/x-tar", "text/x-lisp"]
+
+verifyMimeType :: String -> IO (Maybe String)
+verifyMimeType package = do
+  output <- checkOutput "file" ["--brief" ,"--mime-type", package]
+  return $ case output of
+             Left (code, err) ->
+                 Just (printf "Failed to get mimetype of %s: %s (exit code %d)"
+                              package err code)
+             Right stdout -> let mimeType = head (lines stdout) in
+                             if mimeType `elem` packageMimeTypes then
+                                 Nothing
+                             else
+                                 Just (printf "Invalid mimetype of %s: %s"
+                                              package mimeType)
+
+getPackage :: String -> IO (Either String FilePath)
+getPackage package = do
+  -- Force early failure of the package file doesn't exist
+  void $ getPermissions package
+  mimeType <- verifyMimeType package
+  case mimeType of
+    Just errorMessage -> return (Left errorMessage)
+    Nothing           -> return (Right package)
+
+-- Arguments handling
+
+exitFailure :: String -> IO ()
+exitFailure msg = IO.hPutStrLn IO.stderr msg >> exitWith (ExitFailure 1)
+
+data Arguments = Arguments { argUsername :: String
+                           , argPackageFile :: String}
+               deriving (Show, Data, Typeable)
+
+startUpload :: Username -> FilePath -> IO ()
+startUpload username package = withManager' doUpload
+    where
+      withManager' = withSocketsDo.withManager defaultManagerSettings
+      doUpload manager = do
+        storedAuth <- liftIO $ getAuth username
+        maybe (login manager username) (return.Just) storedAuth >>= sendPackage manager
+      sendPackage _ (Nothing)   = exitFailure "Login failed"
+      sendPackage manager (Just auth) =
+          uploadPackage manager auth package >>= finishUpload
+      finishUpload Nothing       = exitFailure "Upload failed"
+      finishUpload (Just upload) = putStrLn (uploadMessage upload)
+
+arguments :: IO Arguments
+arguments = do
+  programName <- getProgName
+  return $ Arguments { argUsername = def &= argPos 0 &= typ "USERNAME"
+                     , argPackageFile = def &= argPos 1 &= typ "PACKAGE" }
+             &= summary (printf "%s %s" programName appVersion)
+             &= help "Upload a PACKAGE to Marmalade."
+             &= details ["Copyright (C) 2014 Sebastian Wiesner"
+                        ,"Distributed under the terms of the MIT/X11 license."]
+             &= program programName
+
+main :: IO ()
+main = do
+  args <- arguments >>= cmdArgs
+  result <- getPackage (argPackageFile args)
+  case result of
+    Left errorMessage -> exitFailure errorMessage
+    Right package -> startUpload (Username (argUsername args)) package

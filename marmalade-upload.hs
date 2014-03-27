@@ -24,7 +24,7 @@
 --
 -- Requires: cmdargs
 --
--- Install these with: cabal install cmdargs http-conduit aeson
+-- Install these with: cabal install cmdargs aeson http-client http-client-multipart aeson
 
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -40,7 +40,6 @@ import Data.Aeson (FromJSON,parseJSON
                   ,decode)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.UTF8 as UTF8
-import Data.Conduit (ResourceT)
 import Text.Printf (printf)
 import qualified System.Info as SI
 import qualified System.IO as IO
@@ -53,7 +52,8 @@ import System.Console.CmdArgs (Data,Typeable
                               ,def,argPos,typ,help
                               ,details,summary,program)
 import Network (withSocketsDo)
-import Network.HTTP.Conduit (Manager,withManager,httpLbs
+import Network.HTTP.Client (Manager,defaultManagerSettings,withManager
+                           ,httpLbs
                             ,Request,parseUrl,requestHeaders,urlEncodedBody
                             ,responseBody)
 import Network.HTTP.Types.Header (hUserAgent)
@@ -218,14 +218,14 @@ getAuth username = do
 marmaladeURL :: String
 marmaladeURL = "http://marmalade-repo.org"
 
-makeRequest :: String -> ResourceT IO Request
+makeRequest :: String -> IO Request
 makeRequest endpoint = do
   initReq <- parseUrl (marmaladeURL ++ endpoint)
   return initReq { requestHeaders = [(hUserAgent, UTF8.fromString appUserAgent)] }
 
-login :: Manager -> Username -> ResourceT IO (Maybe Auth)
+login :: Manager -> Username -> IO (Maybe Auth)
 login manager (Username username) = do
-  password <- liftIO $ askPassword (printf "Marmalade password for %s (never stored): "
+  password <- askPassword (printf "Marmalade password for %s (never stored): "
                                            username)
   request <- liftM (urlEncodedBody [("name", UTF8.fromString username)
                                    ,("password", UTF8.fromString password)])
@@ -235,9 +235,12 @@ login manager (Username username) = do
   liftIO $ mapM_ (setToken (Username username)) token
   return$ fmap (Auth (Username username)) token
 
--- uploadPackage :: Manager
+-- uploadPackage :: Manager -> Auth -> Package -> ResourceT IO ()
+-- uploadPackage manager auth package = do
+--   request <- (makeRequest "/v1/packages")
 
-doUpload :: Manager -> Username -> Package -> ResourceT IO ()
+
+doUpload :: Manager -> Username -> Package -> IO ()
 doUpload manager username package = do
   storedAuth <- liftIO $ getAuth username
   auth <- maybe (login manager username) (return.Just) storedAuth
@@ -301,5 +304,5 @@ main = do
   case result of
     Left errorMessage -> exitFailure errorMessage
     Right package ->
-        withSocketsDo $ withManager $ \m ->
+        withSocketsDo $ withManager defaultManagerSettings $ \m ->
             doUpload m (Username (argUsername args)) package

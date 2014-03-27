@@ -252,19 +252,8 @@ uploadPackage manager auth package = do
   response <- httpLbs request manager
   return (decode (responseBody response))
 
-doUpload :: Manager -> Username -> FilePath -> IO ()
-doUpload manager username package = do
-  storedAuth <- liftIO $ getAuth username
-  loginResult <- maybe (login manager username) (return.Just) storedAuth
-  case loginResult of
-    Nothing -> exitFailure "Authentication failed"
-    Just auth -> do
-              uploadResult <- uploadPackage manager auth package
-              case uploadResult of
-                Nothing -> exitFailure "Upload failed"
-                Just upload -> putStrLn (uploadMessage upload)
-
 -- Package handling
+
 packageMimeTypes :: [String]
 packageMimeTypes = ["application/x-tar", "text/x-lisp"]
 
@@ -300,6 +289,19 @@ data Arguments = Arguments { argUsername :: String
                            , argPackageFile :: String}
                deriving (Show, Data, Typeable)
 
+startUpload :: Username -> FilePath -> IO ()
+startUpload username package = withManager' doUpload
+    where
+      withManager' = withSocketsDo.withManager defaultManagerSettings
+      doUpload manager = do
+        storedAuth <- liftIO $ getAuth username
+        maybe (login manager username) (return.Just) storedAuth >>= sendPackage manager
+      sendPackage _ (Nothing)   = exitFailure "Login failed"
+      sendPackage manager (Just auth) =
+          uploadPackage manager auth package >>= finishUpload
+      finishUpload Nothing       = exitFailure "Upload failed"
+      finishUpload (Just upload) = putStrLn (uploadMessage upload)
+
 arguments :: IO Arguments
 arguments = do
   programName <- getProgName
@@ -317,6 +319,4 @@ main = do
   result <- getPackage (argPackageFile args)
   case result of
     Left errorMessage -> exitFailure errorMessage
-    Right package ->
-        withSocketsDo $ withManager defaultManagerSettings $ \m ->
-            doUpload m (Username (argUsername args)) package
+    Right package -> startUpload (Username (argUsername args)) package

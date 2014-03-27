@@ -30,51 +30,59 @@
 
 import qualified Data.ByteString as BS
 import Text.Printf (printf)
-import System.Console.CmdArgs
-import System.Directory (doesFileExist)
+import System.IO (hPutStrLn,stderr)
+import System.Environment (getProgName)
 import System.Process (readProcessWithExitCode)
-import System.Exit (ExitCode(ExitSuccess,ExitFailure))
+import System.Exit (ExitCode(ExitSuccess,ExitFailure),exitWith)
+import System.Console.CmdArgs hiding (args)
 
 data Arguments = Arguments { username :: String
                            , packageFile :: String}
                deriving (Show, Data, Typeable)
 
-arguments = Arguments { username = def
-                                   &= typ "USERNAME"
-                                   &= argPos 0
-                      , packageFile = def
-                                      &= typ "PACKAGE"
-                                      &= argPos 1
-                      }
-            &= summary "marmalade-upload 0.1"
-            &= help "Upload a PACKAGE to Marmalade."
-            &= details ["Copyright (C) 2014 Sebastian Wiesner"
-                       ,"Distributed under the terms of the MIT/X11 license."]
-            &= program "marmalade-upload"
+arguments :: IO Arguments
+arguments = do
+  programName <- getProgName
+  return $ Arguments { username = def &= argPos 0 &= typ "USERNAME"
+                     , packageFile = def &= argPos 1 &= typ "PACKAGE" }
+             &= summary (printf "%s 0.1" programName)
+             &= help "Upload a PACKAGE to Marmalade."
+             &= details ["Copyright (C) 2014 Sebastian Wiesner"
+                        ,"Distributed under the terms of the MIT/X11 license."]
+             &= program programName
 
 packageMimeTypes :: [String]
 packageMimeTypes = ["application/x-tar", "text/x-lisp"]
 
+verifyMimeType :: String -> IO (Maybe String)
+verifyMimeType package = do
+    (exitcode, stdout, stderr) <- readProcessWithExitCode "file"
+                                ["--brief" ,"--mime-type", package] []
+    case exitcode of
+      ExitFailure code -> return (Just (printf "Failed to get mimetype of %s: %s (exit code %d)"
+                                               package stderr code))
+      ExitSuccess ->let mimeType = head (lines stdout) in
+                    return $ if mimeType `elem` packageMimeTypes then
+                                 Nothing
+                             else
+                                 Just (printf "Invalid mimetype of %s: %s"
+                                              package mimeType)
+
 readPackage :: String -> IO (Either String BS.ByteString)
 readPackage package = do
   contents <- BS.readFile package
-  (exitcode, stdout, stderr) <- readProcessWithExitCode "file"
-                                ["--brief" ,"--mime-type"] []
-  case exitcode of
-    ExitSuccess -> let mimeType = head (lines stdout) in
-                   if mimeType `elem` packageMimeTypes then
-                       return (Right contents)
-                   else
-                       return (Left (printf "Invalid mimetype of %s: %s"
-                                            package mimeType))
-    ExitFailure code -> return (Left (printf "Failed to get mimetype of %s: %s (exit code %d)"
-                                             package stderr code))
-  return $ Right contents
-  -- if not exists then Just package ++ "does not exist".
-  -- (exitcode, stdout, _)
+  mimeType <- verifyMimeType package
+  case mimeType of
+    Just errorMessage -> return (Left errorMessage)
+    Nothing           -> return (Right contents)
+
+exitFailure :: String -> IO ()
+exitFailure msg = hPutStrLn stderr msg >> exitWith (ExitFailure 1)
 
 main :: IO ()
 main = do
-  args <- cmdArgs arguments
-  contents <- readPackage (packageFile args)
-  print contents
+  args <- arguments >>= cmdArgs
+  result <- readPackage (packageFile args)
+  case result of
+    Left errorMessage -> exitFailure errorMessage
+    Right contents -> print contents

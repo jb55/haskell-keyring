@@ -38,12 +38,12 @@ import Data.Foldable (mapM_)
 import Data.Aeson (FromJSON,parseJSON
                   ,Value(Object),(.:)
                   ,decode)
-import qualified Data.ByteString as BS
 import qualified Data.ByteString.UTF8 as UTF8
 import Text.Printf (printf)
 import qualified System.Info as SI
 import qualified System.IO as IO
 import System.Environment (getProgName,getEnv)
+import System.Directory (getPermissions)
 import System.Process (readProcessWithExitCode
                       ,createProcess,waitForProcess,proc)
 import System.Exit (ExitCode(ExitSuccess,ExitFailure),exitWith)
@@ -54,8 +54,9 @@ import System.Console.CmdArgs (Data,Typeable
 import Network (withSocketsDo)
 import Network.HTTP.Client (Manager,defaultManagerSettings,withManager
                            ,httpLbs
-                            ,Request,parseUrl,requestHeaders,urlEncodedBody
-                            ,responseBody)
+                           ,Request,parseUrl,requestHeaders,urlEncodedBody
+                           ,responseBody)
+import Network.HTTP.Client.MultipartFormData
 import Network.HTTP.Types.Header (hUserAgent)
 
 -- Program information
@@ -206,6 +207,11 @@ instance FromJSON Token where
     parseJSON (Object o) = Token <$> (o .: "token")
     parseJSON _          = mzero
 
+data Upload = Upload { uploadMessage :: String }
+
+instance FromJSON Upload where
+    parseJSON (Object o) = Upload <$> (o .: "message")
+
 data Auth = Auth { authUsername :: Username
                  , authToken :: Token }
           deriving (Show, Eq)
@@ -235,22 +241,30 @@ login manager (Username username) = do
   liftIO $ mapM_ (setToken (Username username)) token
   return$ fmap (Auth (Username username)) token
 
--- uploadPackage :: Manager -> Auth -> Package -> ResourceT IO ()
--- uploadPackage manager auth package = do
---   request <- (makeRequest "/v1/packages")
+uploadPackage :: Manager -> Auth -> FilePath -> IO (Maybe Upload)
+uploadPackage manager auth package = do
+  let (Username username) = authUsername auth
+  let (Token token) = authToken auth
+  request <- makeRequest "/v1/packages" >>=
+             formDataBody [partBS "name" (UTF8.fromString username)
+                          ,partBS "token" (UTF8.fromString token)
+                          ,partFileSource "package" package]
+  response <- httpLbs request manager
+  return (decode (responseBody response))
 
-
-doUpload :: Manager -> Username -> Package -> IO ()
+doUpload :: Manager -> Username -> FilePath -> IO ()
 doUpload manager username package = do
   storedAuth <- liftIO $ getAuth username
-  auth <- maybe (login manager username) (return.Just) storedAuth
-  liftIO $ print auth
+  loginResult <- maybe (login manager username) (return.Just) storedAuth
+  case loginResult of
+    Nothing -> exitFailure "Authentication failed"
+    Just auth -> do
+              uploadResult <- uploadPackage manager auth package
+              case uploadResult of
+                Nothing -> exitFailure "Upload failed"
+                Just upload -> putStrLn (uploadMessage upload)
 
 -- Package handling
-
-data Package = Package { packageFileName :: String
-                       , packageContents :: BS.ByteString }
-
 packageMimeTypes :: [String]
 packageMimeTypes = ["application/x-tar", "text/x-lisp"]
 
@@ -268,14 +282,14 @@ verifyMimeType package = do
                                  Just (printf "Invalid mimetype of %s: %s"
                                               package mimeType)
 
-readPackage :: String -> IO (Either String Package)
-readPackage package = do
-  contents <- BS.readFile package
+getPackage :: String -> IO (Either String FilePath)
+getPackage package = do
+  -- Force early failure of the package file doesn't exist
+  void $ getPermissions package
   mimeType <- verifyMimeType package
   case mimeType of
     Just errorMessage -> return (Left errorMessage)
-    Nothing           -> return (Right Package { packageFileName = package
-                                               , packageContents = contents})
+    Nothing           -> return (Right package)
 
 -- Arguments handling
 
@@ -300,7 +314,7 @@ arguments = do
 main :: IO ()
 main = do
   args <- arguments >>= cmdArgs
-  result <- readPackage (argPackageFile args)
+  result <- getPackage (argPackageFile args)
   case result of
     Left errorMessage -> exitFailure errorMessage
     Right package ->

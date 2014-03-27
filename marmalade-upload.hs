@@ -35,21 +35,26 @@ import Control.Exception (bracket)
 import Control.Monad (liftM,mzero,void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Foldable (mapM_)
-import Data.Aeson
+import Data.Aeson (FromJSON,parseJSON
+                  ,Value(Object),(.:)
+                  ,decode)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.UTF8 as UTF8
 import Data.Conduit (ResourceT)
 import Text.Printf (printf)
 import qualified System.Info as SI
-import System.IO (hPutStrLn,hFlush
-                 ,hGetEcho,hSetEcho
-                 ,stdin,stdout,stderr)
+import qualified System.IO as IO
 import System.Environment (getProgName,getEnv)
 import System.Process (readProcessWithExitCode
                       ,createProcess,waitForProcess,proc)
 import System.Exit (ExitCode(ExitSuccess,ExitFailure),exitWith)
-import System.Console.CmdArgs hiding (args,name)
-import Network.HTTP.Conduit
+import System.Console.CmdArgs (Data,Typeable
+                              ,cmdArgs,(&=)
+                              ,def,argPos,typ,help
+                              ,details,summary,program)
+import Network.HTTP.Conduit (Manager,withManager,httpLbs
+                            ,Request,parseUrl,requestHeaders,urlEncodedBody
+                            ,responseBody)
 import Network.HTTP.Types.Header (hUserAgent)
 
 -- Program information
@@ -69,14 +74,14 @@ appUserAgent = appService ++ "/" ++ appVersion
 -- CLI tools
 
 withEcho :: Bool -> IO a -> IO a
-withEcho echo action = bracket (hGetEcho stdin)
-                       (hSetEcho stdin)
-                       (const $ hSetEcho stdin echo >> action)
+withEcho echo action = bracket (IO.hGetEcho IO.stdin)
+                       (IO.hSetEcho IO.stdin)
+                       (const $ IO.hSetEcho IO.stdin echo >> action)
 
 askPassword :: String -> IO String
 askPassword prompt = do
   putStr prompt
-  hFlush stdout
+  IO.hFlush IO.stdout
   password <- withEcho False getLine
   putChar '\n'
   return password
@@ -260,18 +265,18 @@ readPackage package = do
 -- Arguments handling
 
 exitFailure :: String -> IO ()
-exitFailure msg = hPutStrLn stderr msg >> exitWith (ExitFailure 1)
+exitFailure msg = IO.hPutStrLn IO.stderr msg >> exitWith (ExitFailure 1)
 
-data Arguments = Arguments { username :: String
-                           , packageFile :: String}
+data Arguments = Arguments { argUsername :: String
+                           , argPackageFile :: String}
                deriving (Show, Data, Typeable)
 
 arguments :: IO Arguments
 arguments = do
   programName <- getProgName
-  return $ Arguments { username = def &= argPos 0 &= typ "USERNAME"
-                     , packageFile = def &= argPos 1 &= typ "PACKAGE" }
-             &= summary (printf "%s 0.1" programName)
+  return $ Arguments { argUsername = def &= argPos 0 &= typ "USERNAME"
+                     , argPackageFile = def &= argPos 1 &= typ "PACKAGE" }
+             &= summary (printf "%s %s" programName appVersion)
              &= help "Upload a PACKAGE to Marmalade."
              &= details ["Copyright (C) 2014 Sebastian Wiesner"
                         ,"Distributed under the terms of the MIT/X11 license."]
@@ -280,8 +285,8 @@ arguments = do
 main :: IO ()
 main = do
   args <- arguments >>= cmdArgs
-  result <- readPackage (packageFile args)
+  result <- readPackage (argPackageFile args)
   case result of
     Left errorMessage -> exitFailure errorMessage
     Right package ->
-        withManager $ \m -> doUpload m (Username (username args)) package
+        withManager $ \m -> doUpload m (Username (argUsername args)) package

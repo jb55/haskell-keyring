@@ -34,14 +34,12 @@ import Control.Applicative ((<$>))
 import Control.Exception (bracket)
 import Control.Monad (liftM,mzero)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.List (intersperse)
 import Data.Foldable (mapM_)
 import Data.Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.UTF8 as UTF8
 import Data.Conduit (ResourceT)
 import Text.Printf (printf)
-import System.IO.Error (ioError,userError)
 import System.IO (hPutStrLn,hFlush
                  ,hGetEcho,hSetEcho
                  ,stdin,stdout,stderr)
@@ -53,28 +51,21 @@ import System.Console.CmdArgs hiding (args)
 import Network.HTTP.Conduit
 import Network.HTTP.Types.Header (hUserAgent)
 
-data Arguments = Arguments { username :: String
-                           , packageFile :: String}
-               deriving (Show, Data, Typeable)
+-- Program information
 
-data Package = Package { packageFileName :: String
-                       , packageContents :: BS.ByteString }
+appName :: String
+appName = "marmalade-upload"
 
-newtype Username = Username String deriving (Show, Eq)
-newtype Token = Token String deriving (Show, Eq)
+appVersion :: String
+appVersion = "0.1"
 
-instance FromJSON Token where
-    parseJSON (Object o) = Token <$> (o .: "token")
-    parseJSON _          = mzero
+appService :: String
+appService = "lunaryorn/" ++ appName
 
-service :: String
-service = "lunaryorn/marmalade-upload"
+appUserAgent :: String
+appUserAgent = appService ++ "/" ++ appVersion
 
-packageMimeTypes :: [String]
-packageMimeTypes = ["application/x-tar", "text/x-lisp"]
-
-marmaladeURL :: String
-marmaladeURL = "http://marmalade-repo.org"
+-- CLI tools
 
 withEcho :: Bool -> IO a -> IO a
 withEcho echo action = bracket (hGetEcho stdin)
@@ -89,6 +80,8 @@ askPassword prompt = do
   putChar '\n'
   return password
 
+-- Process tools
+
 callProcess :: String -> [String] -> IO ()
 callProcess executable args = do
   (_, _, _, handle) <- createProcess (proc executable args)
@@ -96,7 +89,7 @@ callProcess executable args = do
   case exitCode of
     ExitSuccess -> return ()
     ExitFailure code ->
-        let cmd = executable ++ " " ++ concat (intersperse " " args) in
+        let cmd = executable ++ " " ++ unwords args in
         ioError (userError (printf "%s (exit code %d)" cmd code))
 
 checkOutput :: String -> [String] -> IO (Either (Int, String) String)
@@ -106,11 +99,13 @@ checkOutput executable args = do
              (ExitSuccess, stdout, _)      -> Right stdout
              (ExitFailure code, _, stderr) -> Left (code, stderr)
 
+-- Token storage
+
 getToken :: Username -> IO (Maybe Token)
 getToken (Username username) = do
     output <- checkOutput "security" ["find-generic-password", "-w"
                                      ,"-a", username
-                                     ,"-s", service]
+                                     ,"-s", appService]
     return $ case output of
                Left _ -> Nothing -- The item didn't exist
                Right stdout -> Just (Token (head (lines stdout)))
@@ -119,15 +114,27 @@ setToken :: Username -> Token -> IO ()
 setToken (Username username) (Token token) =
     callProcess "security" ["add-generic-password"
                            ,"-a", username
-                           ,"-s", service
+                           ,"-s", appService
                            ,"-w", token
                            ,"-U"
                            ,"-l", "Marmalade access token"]
 
+-- Marmalade access
+
+newtype Username = Username String deriving (Show, Eq)
+newtype Token = Token String deriving (Show, Eq)
+
+instance FromJSON Token where
+    parseJSON (Object o) = Token <$> (o .: "token")
+    parseJSON _          = mzero
+
+marmaladeURL :: String
+marmaladeURL = "http://marmalade-repo.org"
+
 makeRequest :: String -> ResourceT IO Request
 makeRequest endpoint = do
   initReq <- parseUrl (marmaladeURL ++ endpoint)
-  return initReq { requestHeaders = [(hUserAgent, UTF8.fromString service)] }
+  return initReq { requestHeaders = [(hUserAgent, UTF8.fromString appUserAgent)] }
 
 login :: Manager -> Username -> ResourceT IO (Maybe Token)
 login manager (Username username) = do
@@ -147,6 +154,14 @@ doUpload manager username package = do
   token <- maybe (login manager username) (return.Just) storedToken
   liftIO $ print token
 
+-- Package handling
+
+data Package = Package { packageFileName :: String
+                       , packageContents :: BS.ByteString }
+
+packageMimeTypes :: [String]
+packageMimeTypes = ["application/x-tar", "text/x-lisp"]
+
 verifyMimeType :: String -> IO (Maybe String)
 verifyMimeType package = do
   output <- checkOutput "file" ["--brief" ,"--mime-type", package]
@@ -161,16 +176,23 @@ verifyMimeType package = do
                                  Just (printf "Invalid mimetype of %s: %s"
                                               package mimeType)
 
-readPackage :: String -> IO (Either String BS.ByteString)
+readPackage :: String -> IO (Either String Package)
 readPackage package = do
   contents <- BS.readFile package
   mimeType <- verifyMimeType package
   case mimeType of
     Just errorMessage -> return (Left errorMessage)
-    Nothing           -> return (Right contents)
+    Nothing           -> return (Right Package { packageFileName = package
+                                               , packageContents = contents})
+
+-- Arguments handling
 
 exitFailure :: String -> IO ()
 exitFailure msg = hPutStrLn stderr msg >> exitWith (ExitFailure 1)
+
+data Arguments = Arguments { username :: String
+                           , packageFile :: String}
+               deriving (Show, Data, Typeable)
 
 arguments :: IO Arguments
 arguments = do
@@ -189,7 +211,5 @@ main = do
   result <- readPackage (packageFile args)
   case result of
     Left errorMessage -> exitFailure errorMessage
-    Right contents -> let package = Package { packageFileName = packageFile args
-                                            , packageContents = contents} in
-                      withManager $ \m ->
-                          doUpload m (Username (username args)) package
+    Right package ->
+        withManager $ \m -> doUpload m (Username (username args)) package

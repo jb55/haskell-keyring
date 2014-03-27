@@ -52,6 +52,7 @@ import System.Console.CmdArgs (Data,Typeable
                               ,cmdArgs,(&=)
                               ,def,argPos,typ,help
                               ,details,summary,program)
+import Network (withSocketsDo)
 import Network.HTTP.Conduit (Manager,withManager,httpLbs
                             ,Request,parseUrl,requestHeaders,urlEncodedBody
                             ,responseBody)
@@ -300,4 +301,5 @@ main = do
   case result of
     Left errorMessage -> exitFailure errorMessage
     Right package ->
-        withManager $ \m -> doUpload m (Username (argUsername args)) package
+        withSocketsDo $ withManager $ \m ->
+            doUpload m (Username (argUsername args)) package

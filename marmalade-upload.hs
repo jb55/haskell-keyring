@@ -205,6 +205,15 @@ instance FromJSON Token where
     parseJSON (Object o) = Token <$> (o .: "token")
     parseJSON _          = mzero
 
+data Auth = Auth { authUsername :: Username
+                 , authToken :: Token }
+          deriving (Show, Eq)
+
+getAuth :: Username -> IO (Maybe Auth)
+getAuth username = do
+  token <- getToken username
+  return $ fmap (Auth username) token
+
 marmaladeURL :: String
 marmaladeURL = "http://marmalade-repo.org"
 
@@ -213,7 +222,7 @@ makeRequest endpoint = do
   initReq <- parseUrl (marmaladeURL ++ endpoint)
   return initReq { requestHeaders = [(hUserAgent, UTF8.fromString appUserAgent)] }
 
-login :: Manager -> Username -> ResourceT IO (Maybe Token)
+login :: Manager -> Username -> ResourceT IO (Maybe Auth)
 login manager (Username username) = do
   password <- liftIO $ askPassword (printf "Marmalade password for %s (never stored): "
                                            username)
@@ -223,13 +232,15 @@ login manager (Username username) = do
   response <- httpLbs request manager
   let token = decode (responseBody response)
   liftIO $ mapM_ (setToken (Username username)) token
-  return token
+  return$ fmap (Auth (Username username)) token
+
+-- uploadPackage :: Manager
 
 doUpload :: Manager -> Username -> Package -> ResourceT IO ()
 doUpload manager username package = do
-  storedToken <- liftIO $ getToken username
-  token <- maybe (login manager username) (return.Just) storedToken
-  liftIO $ print token
+  storedAuth <- liftIO $ getAuth username
+  auth <- maybe (login manager username) (return.Just) storedAuth
+  liftIO $ print auth
 
 -- Package handling
 

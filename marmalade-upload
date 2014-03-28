@@ -111,21 +111,21 @@ checkOutput executable args = do
 
 getTokenDarwin :: Username -> IO (Maybe Token)
 getTokenDarwin (Username username) = do
-    output <- checkOutput "security" ["find-generic-password", "-w"
-                                     ,"-a", username
-                                     ,"-s", appService]
-    return $ case output of
-               Left _ -> Nothing -- The item didn't exist
-               Right stdout -> Just (Token (head (lines stdout)))
+  output <- checkOutput "security" ["find-generic-password", "-w"
+                                   ,"-a", username
+                                   ,"-s", appService]
+  return $ case output of
+    Left _ -> Nothing -- The item didn't exist
+    Right stdout -> Just (Token (head (lines stdout)))
 
 setTokenDarwin :: Username -> Token -> IO ()
 setTokenDarwin (Username username) (Token token) =
-    callProcess "security" ["add-generic-password"
-                           ,"-a", username
-                           ,"-s", appService
-                           ,"-w", token
-                           ,"-U"
-                           ,"-l", "Marmalade access token"]
+  callProcess "security" ["add-generic-password"
+                         ,"-a", username
+                         ,"-s", appService
+                         ,"-w", token
+                         ,"-U"
+                         ,"-l", "Marmalade access token"]
 
 callKWallet :: String -> [String] -> IO (Maybe String)
 callKWallet method args = do
@@ -140,41 +140,41 @@ openNetworkKWallet :: IO (Maybe String)
 openNetworkKWallet = do
   walletName <- callKWallet "networkWallet" []
   maybe (return Nothing) openWallet walletName
-    where
-      openWallet name = callKWallet "open" [name, "0", appService]
+  where
+    openWallet name = callKWallet "open" [name, "0", appService]
 
 closeKWallet :: String -> IO ()
 closeKWallet handle = void $ callKWallet "close" [handle, appService]
 
 withLocalKWallet :: (String -> IO (Maybe a)) -> IO (Maybe a)
 withLocalKWallet action = bracket openNetworkKWallet close act
-    where
-      act = maybe (return Nothing) action
-      close = maybe (return ()) closeKWallet
+  where
+    act = maybe (return Nothing) action
+    close = maybe (return ()) closeKWallet
 
 getKWalletKey :: Username -> String
 getKWalletKey (Username username) = username ++ "@" ++ appService
 
 getTokenKDE :: Username -> IO (Maybe Token)
 getTokenKDE username = withLocalKWallet getPassword
-      where
-        getPassword handle = do
-          password <- callKWallet "readPassword" [handle, "Passwords"
-                                                 ,getKWalletKey username
-                                                 ,appService]
-          return $ case password of
-                     Nothing -> Nothing
-                     Just "" -> Nothing
-                     Just t  -> Just $ Token t
+  where
+    getPassword handle = do
+      password <- callKWallet "readPassword" [handle, "Passwords"
+                                             ,getKWalletKey username
+                                             ,appService]
+      return $ case password of
+        Nothing -> Nothing
+        Just "" -> Nothing
+        Just t  -> Just $ Token t
 
 setTokenKDE :: Username -> Token -> IO ()
 setTokenKDE username (Token token) = void $ withLocalKWallet setPassword
-    where
-      setPassword handle = callKWallet "writePassword" [handle
-                                                       ,"Passwords"
-                                                       ,getKWalletKey username
-                                                       ,token
-                                                       ,appService]
+  where
+    setPassword handle = callKWallet "writePassword" [handle
+                                                     ,"Passwords"
+                                                     ,getKWalletKey username
+                                                     ,token
+                                                     ,appService]
 
 tokenProvider :: IO (Username -> IO (Maybe Token), Username -> Token -> IO ())
 tokenProvider = case SI.os of
@@ -185,8 +185,8 @@ tokenProvider = case SI.os of
                                "KDE" -> (getTokenKDE, setTokenKDE)
                                _ -> dummy
                   _ -> return dummy
-    where
-      dummy = (\_ -> return Nothing, \_ _ -> return ())
+  where
+    dummy = (\_ -> return Nothing, \_ _ -> return ())
 
 getToken :: Username -> IO (Maybe Token)
 getToken username = do
@@ -204,13 +204,13 @@ newtype Username = Username String deriving (Show, Eq)
 newtype Token = Token String deriving (Show, Eq)
 
 instance FromJSON Token where
-    parseJSON (Object o) = Token <$> (o .: "token")
-    parseJSON _          = mzero
+  parseJSON (Object o) = Token <$> (o .: "token")
+  parseJSON _          = mzero
 
 data Upload = Upload { uploadMessage :: String }
 
 instance FromJSON Upload where
-    parseJSON (Object o) = Upload <$> (o .: "message")
+  parseJSON (Object o) = Upload <$> (o .: "message")
 
 data Auth = Auth { authUsername :: Username
                  , authToken :: Token }

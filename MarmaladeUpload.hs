@@ -18,12 +18,6 @@
 -- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 -- THE SOFTWARE.
 
--- Upload packages to Marmalade.
---
--- Requires: cmdargs aeson http-client http-client-multipart
---
--- Install these with: cabal install cmdargs aeson http-client http-client-multipart
-
 {-# OPTIONS_GHC -Wall -O2 #-}
 
 {-# LANGUAGE FlexibleContexts #-}

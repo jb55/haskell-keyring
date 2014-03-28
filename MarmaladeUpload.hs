@@ -1,5 +1,3 @@
-#!/usr/bin/env runhaskell
-
 -- Copyright (c) 2014 Sebastian Wiesner <lunaryorn@gmail.com>
 
 -- Permission is hereby granted, free of charge, to any person obtaining a copy

@@ -26,23 +26,30 @@
 --
 -- Install these with: cabal install cmdargs aeson http-client http-client-multipart
 
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 import Control.Applicative ((<$>))
 import Control.Exception (bracket)
-import Control.Monad (liftM,mzero,void)
-import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Failure (Failure(..))
+import Control.Monad (liftM,mzero,void,unless,when)
+import Control.Monad.Error (ErrorT,MonadError,Error(..),runErrorT,throwError)
+import Control.Monad.IO.Class (MonadIO,liftIO)
+import Control.Monad.State (StateT,MonadState,evalStateT,get,gets,put)
+import Data.ByteString.Lazy (ByteString)
 import Data.Aeson (FromJSON,parseJSON
                   ,Value(Object),(.:)
                   ,decode)
 import qualified Data.ByteString.UTF8 as UTF8
-import Data.Foldable (mapM_)
 import Network (withSocketsDo)
 import Network.HTTP.Client (Manager,defaultManagerSettings,withManager
+                           ,HttpException
                            ,httpLbs
                            ,Request,parseUrl,requestHeaders,urlEncodedBody
-                           ,responseBody)
+                           ,Response,responseBody)
 import Network.HTTP.Client.MultipartFormData
 import Network.HTTP.Types.Header (hUserAgent)
 import Prelude hiding (mapM_)
@@ -55,6 +62,7 @@ import System.Environment (getProgName,getEnv)
 import System.Exit (ExitCode(ExitSuccess,ExitFailure),exitWith)
 import qualified System.Info as SI
 import qualified System.IO as IO
+import System.IO.Error (tryIOError)
 import System.Process (readProcessWithExitCode
                       ,createProcess,waitForProcess,proc)
 import Text.Printf (printf)
@@ -129,11 +137,11 @@ setTokenDarwin (Username username) (Token token) =
 
 callKWallet :: String -> [String] -> IO (Maybe String)
 callKWallet method args = do
-  output <-  checkOutput "qdbus-qt4" (["org.kde.kwalletd"
-                                      ,"/modules/kwalletd"
-                                      ,method] ++ args)
+  output <- checkOutput "qdbus-qt4" (["org.kde.kwalletd"
+                                     ,"/modules/kwalletd"
+                                     ,method] ++ args)
   case output of
-    Left _       -> print output >> return Nothing
+    Left _       -> return Nothing
     Right stdout -> return $ Just (head (lines stdout))
 
 openNetworkKWallet :: IO (Maybe String)
@@ -190,13 +198,13 @@ tokenProvider = case SI.os of
 
 getToken :: Username -> IO (Maybe Token)
 getToken username = do
-  (get, _) <- tokenProvider
-  get username
+  (getT, _) <- tokenProvider
+  getT username
 
 setToken :: Username -> Token -> IO ()
 setToken username token = do
-  (_, set) <- tokenProvider
-  set username token
+  (_, setT) <- tokenProvider
+  setT username token
 
 -- Marmalade access
 
@@ -207,100 +215,145 @@ instance FromJSON Token where
   parseJSON (Object o) = Token <$> (o .: "token")
   parseJSON _          = mzero
 
+data MarmaladeError = IOError IOError
+                    | HttpException HttpException
+                    | InvalidPackage FilePath String
+                    | InvalidJSON ByteString
+                    | GenericError String
+                    | UnknownError
+
+instance Show MarmaladeError where
+  show (IOError e) = show e
+  show (HttpException e) = show e
+  show (InvalidPackage f m) = printf "%s: invalid package: %s" f m
+  show (InvalidJSON s) = "Invalid JSON response: " ++ (show s)
+  show (GenericError m) = "Unknown error: " ++ m
+  show UnknownError = "Unknown error"
+
+instance Error MarmaladeError where
+  noMsg = UnknownError
+  strMsg message = GenericError message
+
+guard :: (MonadIO m, MonadError MarmaladeError m) => IO b -> m b
+guard action = do
+  result <- liftIO $ tryIOError action
+  case result of
+    Left e -> throwError (IOError e)
+    Right r -> return r
+
+data Auth = BasicAuth Username (Marmalade String)
+          | TokenAuth Username Token
+
+data MarmaladeState = MarmaladeState { marmaladeAuth :: Auth
+                                     , marmaladeLoggedIn :: Bool
+                                     , marmaladeManager :: Manager }
+
+newtype Marmalade a =
+  Marmalade { runM :: ErrorT MarmaladeError (StateT MarmaladeState IO) a }
+  deriving (Monad,MonadIO,Functor
+           ,MonadState MarmaladeState
+           ,MonadError MarmaladeError)
+
+instance Failure HttpException Marmalade where
+  failure e = throwError (HttpException e)
+
+runMarmalade :: Auth -> Manager -> Marmalade a -> IO (Either MarmaladeError a)
+runMarmalade auth manager m = evalStateT (runErrorT (runM m)) state
+  where state = MarmaladeState { marmaladeAuth = auth
+                               , marmaladeLoggedIn = False
+                               , marmaladeManager = manager}
+
 data Upload = Upload { uploadMessage :: String }
 
 instance FromJSON Upload where
   parseJSON (Object o) = Upload <$> (o .: "message")
 
-data Auth = Auth { authUsername :: Username
-                 , authToken :: Token }
-          deriving (Show, Eq)
-
-getAuth :: Username -> IO (Maybe Auth)
-getAuth username = do
-  token <- getToken username
-  return $ fmap (Auth username) token
-
 marmaladeURL :: String
 marmaladeURL = "http://marmalade-repo.org"
 
-makeRequest :: String -> IO Request
+makeRequest :: String -> Marmalade Request
 makeRequest endpoint = do
   initReq <- parseUrl (marmaladeURL ++ endpoint)
   return initReq { requestHeaders = [(hUserAgent, UTF8.fromString appUserAgent)] }
-
-login :: Manager -> Username -> IO (Maybe Auth)
-login manager (Username username) = do
-  password <- askPassword (printf "Marmalade password for %s (never stored): "
-                                           username)
-  request <- liftM (urlEncodedBody [("name", UTF8.fromString username)
-                                   ,("password", UTF8.fromString password)])
-             (makeRequest "/v1/users/login")
-  response <- httpLbs request manager
-  let token = decode (responseBody response)
-  liftIO $ mapM_ (setToken (Username username)) token
-  return$ fmap (Auth (Username username)) token
-
-uploadPackage :: Manager -> Auth -> FilePath -> IO (Maybe Upload)
-uploadPackage manager auth package = do
-  let (Username username) = authUsername auth
-  let (Token token) = authToken auth
-  request <- makeRequest "/v1/packages" >>=
-             formDataBody [partBS "name" (UTF8.fromString username)
-                          ,partBS "token" (UTF8.fromString token)
-                          ,partFileSource "package" package]
-  response <- httpLbs request manager
-  return (decode (responseBody response))
 
 -- Package handling
 
 packageMimeTypes :: [String]
 packageMimeTypes = ["application/x-tar", "text/x-lisp"]
 
-verifyMimeType :: String -> IO (Maybe String)
-verifyMimeType package = do
-  output <- checkOutput "file" ["--brief" ,"--mime-type", package]
-  return $ case output of
-             Left (code, err) ->
-                 Just (printf "Failed to get mimetype of %s: %s (exit code %d)"
-                              package err code)
-             Right stdout -> let mimeType = head (lines stdout) in
-                             if mimeType `elem` packageMimeTypes then
-                                 Nothing
-                             else
-                                 Just (printf "Invalid mimetype of %s: %s"
-                                              package mimeType)
+parseResponseBody :: FromJSON c => Response ByteString -> Marmalade c
+parseResponseBody response =
+  case decode body of
+    Just o  -> return o
+    Nothing -> throwError (InvalidJSON body)
+  where body = responseBody response
 
-getPackage :: String -> IO (Either String FilePath)
-getPackage package = do
-  -- Force early failure of the package file doesn't exist
-  void $ getPermissions package
-  mimeType <- verifyMimeType package
-  case mimeType of
-    Just errorMessage -> return (Left errorMessage)
-    Nothing           -> return (Right package)
+login :: Marmalade (Username, Token)
+login = do
+  state <- get
+  case marmaladeAuth state of
+    BasicAuth username getPassword -> do
+      token <- doLogin username getPassword
+      put state { marmaladeLoggedIn = True
+                , marmaladeAuth = TokenAuth username token }
+      return (username, token)
+    TokenAuth username token -> return (username, token)
+  where doLogin (Username username) getPassword = do
+          manager <- gets marmaladeManager
+          password <- getPassword
+          request <- liftM (urlEncodedBody [("name", UTF8.fromString username)
+                                          ,("password", UTF8.fromString password)])
+                     (makeRequest "/v1/users/login")
+          response <- guard $ httpLbs request manager
+          parseResponseBody response
+
+verifyPackage :: String -> Marmalade ()
+verifyPackage packageFile = do
+  -- Force early failure if the package doesn't exist
+  guard $ void $ getPermissions packageFile
+  output <- guard $ checkOutput "file" ["--brief" ,"--mime-type", packageFile]
+  case output of
+    Left (code, err) -> throwError $
+                        InvalidPackage packageFile
+                        (printf "failed to get mimetype: %s (exit code %d)" err code)
+    Right stdout ->
+      let mimeType = head (lines stdout) in
+      unless (mimeType `elem` packageMimeTypes)
+      (throwError (InvalidPackage packageFile (printf "invalid mimetype %s" mimeType)))
+
+uploadPackage :: FilePath -> Marmalade Upload
+uploadPackage packageFile = do
+  verifyPackage packageFile
+  (Username username, Token token) <- login
+  manager <- gets marmaladeManager
+  request <- makeRequest "/v1/packages" >>=
+             guard.formDataBody [partBS "name" (UTF8.fromString username)
+                                ,partBS "token" (UTF8.fromString token)
+                                ,partFileSource "package" packageFile]
+  response <- guard $ httpLbs request manager
+  parseResponseBody response
+
+-- Authentication
+
+askMarmaladePassword :: String -> Marmalade String
+askMarmaladePassword username = do
+  guard $ askPassword (printf "Marmalade password for %s (never stored): " username)
+
+getAuth :: String -> IO Auth
+getAuth username = do
+  result <- getToken (Username username)
+  return $ case result of
+    Just token -> (TokenAuth (Username username) token)
+    Nothing -> (BasicAuth (Username username) (askMarmaladePassword username))
 
 -- Arguments handling
 
 exitFailure :: String -> IO ()
-exitFailure msg = IO.hPutStrLn IO.stderr msg >> exitWith (ExitFailure 1)
+exitFailure message = IO.hPutStrLn IO.stderr message >> exitWith (ExitFailure 1)
 
 data Arguments = Arguments { argUsername :: String
                            , argPackageFile :: String}
                deriving (Show, Data, Typeable)
-
-startUpload :: Username -> FilePath -> IO ()
-startUpload username package = withManager' doUpload
-    where
-      withManager' = withSocketsDo.withManager defaultManagerSettings
-      doUpload manager = do
-        storedAuth <- liftIO $ getAuth username
-        maybe (login manager username) (return.Just) storedAuth >>= sendPackage manager
-      sendPackage _ (Nothing)   = exitFailure "Login failed"
-      sendPackage manager (Just auth) =
-          uploadPackage manager auth package >>= finishUpload
-      finishUpload Nothing       = exitFailure "Upload failed"
-      finishUpload (Just upload) = putStrLn (uploadMessage upload)
 
 arguments :: IO Arguments
 arguments = do
@@ -316,7 +369,15 @@ arguments = do
 main :: IO ()
 main = do
   args <- arguments >>= cmdArgs
-  result <- getPackage (argPackageFile args)
+  auth <- getAuth (argUsername args)
+  result <- withManager' $ \m ->
+    runMarmalade auth m $ do
+      (username, token) <- login
+      upload <- uploadPackage (argPackageFile args)
+      isLoggedIn <- gets marmaladeLoggedIn
+      when isLoggedIn (guard $ setToken username token)
+      guard $ putStrLn (uploadMessage upload)
   case result of
-    Left errorMessage -> exitFailure errorMessage
-    Right package -> startUpload (Username (argUsername args)) package
+    Left e -> exitFailure $ show e
+    _ -> return ()
+  where withManager' = withSocketsDo.withManager defaultManagerSettings

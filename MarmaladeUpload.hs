@@ -257,10 +257,11 @@ runMarmalade auth manager m = evalStateT (runErrorT (runM m)) state
                                , marmaladeLoggedIn = False
                                , marmaladeManager = manager}
 
-data Upload = Upload { uploadMessage :: String }
+newtype Upload = Upload { uploadMessage :: String }
 
 instance FromJSON Upload where
   parseJSON (Object o) = Upload <$> (o .: "message")
+  parseJSON _          = mzero
 
 marmaladeURL :: String
 marmaladeURL = "http://marmalade-repo.org"

@@ -55,13 +55,15 @@ import System.IO.Error (tryIOError)
 import System.Process (readProcessWithExitCode,callProcess)
 import Text.Printf (printf)
 
+import Paths_marmalade_upload (version)
+
 -- Program information
 
 appName :: String
 appName = "marmalade-upload"
 
 appVersion :: String
-appVersion = "0.1"
+appVersion = show version
 
 appService :: String
 appService = "lunaryorn/" ++ appName

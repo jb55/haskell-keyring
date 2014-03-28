@@ -26,6 +26,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
+import qualified Data.Aeson as JSON
+import qualified Data.ByteString.UTF8 as UTF8
+import qualified System.Directory as Dir
+import qualified System.Environment as Env
+import qualified System.Info as SI
+import qualified System.IO as IO
+import qualified Network as N
+import qualified Network.HTTP.Client as C
+import qualified System.Console.CmdArgs as Args
+
 import Control.Applicative ((<$>))
 import Control.Exception (bracket)
 import Control.Failure (Failure(..))
@@ -33,31 +43,14 @@ import Control.Monad (liftM,mzero,void,unless,when)
 import Control.Monad.Error (ErrorT,MonadError,Error(..),runErrorT,throwError)
 import Control.Monad.IO.Class (MonadIO,liftIO)
 import Control.Monad.State (StateT,MonadState,evalStateT,get,gets,put)
-import Data.Aeson (FromJSON,parseJSON
-                  ,Value(Object),(.:)
-                  ,decode)
+import Data.Aeson (FromJSON,Value(Object),(.:))
 import Data.ByteString.Lazy (ByteString)
-import qualified Data.ByteString.UTF8 as UTF8
-import Network (withSocketsDo)
-import Network.HTTP.Client (Manager,defaultManagerSettings,withManager
-                           ,HttpException
-                           ,httpLbs
-                           ,Request(requestHeaders,checkStatus)
-                           ,parseUrl,urlEncodedBody
-                           ,Response(..))
+import Network.HTTP.Client (Manager,HttpException,Request,Response)
 import Network.HTTP.Client.MultipartFormData
 import Network.HTTP.Types.Header (hUserAgent)
 import Network.HTTP.Types.Status (Status(statusCode,statusMessage))
-import Prelude hiding (mapM_)
-import System.Console.CmdArgs (Data,Typeable
-                              ,cmdArgs,(&=)
-                              ,def,argPos,typ,help
-                              ,details,summary,program)
-import System.Directory (getPermissions)
-import System.Environment (getProgName,getEnv)
+import System.Console.CmdArgs (Data,Typeable,(&=),cmdArgs)
 import System.Exit (ExitCode(ExitSuccess,ExitFailure),exitWith)
-import qualified System.Info as SI
-import qualified System.IO as IO
 import System.IO.Error (tryIOError)
 import System.Process (readProcessWithExitCode
                       ,createProcess,waitForProcess,proc)
@@ -184,7 +177,7 @@ tokenProvider :: IO (Username -> IO (Maybe Token), Username -> Token -> IO ())
 tokenProvider = case SI.os of
                   "darwin" -> return (getTokenDarwin, setTokenDarwin)
                   "linux" -> do
-                             desktop <- getEnv "XDG_CURRENT_DESKTOP"
+                             desktop <- Env.getEnv "XDG_CURRENT_DESKTOP"
                              return $ case desktop of
                                "KDE" -> (getTokenKDE, setTokenKDE)
                                _ -> dummy
@@ -286,23 +279,23 @@ marmaladeURL = "http://marmalade-repo.org"
 
 makeRequest :: String -> Marmalade Request
 makeRequest endpoint = do
-  initReq <- parseUrl (marmaladeURL ++ endpoint)
-  return initReq { requestHeaders = [(hUserAgent, UTF8.fromString appUserAgent)]
+  initReq <- C.parseUrl (marmaladeURL ++ endpoint)
+  return initReq { C.requestHeaders = [(hUserAgent, UTF8.fromString appUserAgent)]
                  -- We keep every bad status, because we handle these later
-                 , checkStatus = \_ _ _ -> Nothing
+                 , C.checkStatus = \_ _ _ -> Nothing
                  }
 
 parseResponse :: FromJSON c => Response ByteString -> Marmalade c
 parseResponse response =
   case statusCode status of
-    200 -> case decode body of
+    200 -> case JSON.decode body of
       Just o  -> return o
       Nothing -> throwError (InvalidJSON body)
     400 -> throwError (BadRequest message)
     _ -> throwError (InvalidResponseStatus status message)
-  where body = responseBody response
-        status = responseStatus response
-        message = fmap messageContents (decode body)
+  where body = C.responseBody response
+        status = C.responseStatus response
+        message = fmap messageContents (JSON.decode body)
 
 -- Package handling
 
@@ -322,16 +315,16 @@ login = do
   where doLogin (Username username) getPassword = do
           manager <- gets marmaladeManager
           password <- getPassword
-          request <- liftM (urlEncodedBody [("name", UTF8.fromString username)
-                                          ,("password", UTF8.fromString password)])
+          request <- liftM (C.urlEncodedBody [("name", UTF8.fromString username)
+                                             ,("password", UTF8.fromString password)])
                      (makeRequest "/v1/users/login")
-          response <- guard $ httpLbs request manager
+          response <- guard $ C.httpLbs request manager
           parseResponse response
 
 verifyPackage :: String -> Marmalade ()
 verifyPackage packageFile = do
   -- Force early failure if the package doesn't exist
-  guard $ void $ getPermissions packageFile
+  guard $ void $ Dir.getPermissions packageFile
   output <- guard $ checkOutput "file" ["--brief" ,"--mime-type", packageFile]
   case output of
     Left (code, err) -> throwError $
@@ -351,7 +344,7 @@ uploadPackage packageFile = do
              guard.formDataBody [partBS "name" (UTF8.fromString username)
                                 ,partBS "token" (UTF8.fromString token)
                                 ,partFileSource "package" packageFile]
-  response <- guard $ httpLbs request manager
+  response <- guard $ C.httpLbs request manager
   parseResponse response
 
 -- Authentication
@@ -378,14 +371,16 @@ data Arguments = Arguments { argUsername :: String
 
 arguments :: IO Arguments
 arguments = do
-  programName <- getProgName
-  return $ Arguments { argUsername = def &= argPos 0 &= typ "USERNAME"
-                     , argPackageFile = def &= argPos 1 &= typ "PACKAGE" }
-             &= summary (printf "%s %s" programName appVersion)
-             &= help "Upload a PACKAGE to Marmalade."
-             &= details ["Copyright (C) 2014 Sebastian Wiesner"
-                        ,"Distributed under the terms of the MIT/X11 license."]
-             &= program programName
+  programName <- Env.getProgName
+  return $ Arguments { argUsername = Args.def &= Args.argPos 0
+                                     &= Args.typ "USERNAME"
+                     , argPackageFile = Args.def &= Args.argPos 1
+                                        &= Args.typ "PACKAGE" }
+             &= Args.summary (printf "%s %s" programName appVersion)
+             &= Args.help "Upload a PACKAGE to Marmalade."
+             &= Args.details ["Copyright (C) 2014 Sebastian Wiesner"
+                             ,"Distributed under the terms of the MIT/X11 license."]
+             &= Args.program programName
 
 main :: IO ()
 main = do
@@ -401,4 +396,4 @@ main = do
   case result of
     Left e -> exitFailure $ show e
     _ -> return ()
-  where withManager' = withSocketsDo.withManager defaultManagerSettings
+  where withManager' = N.withSocketsDo.C.withManager C.defaultManagerSettings

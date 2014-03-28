@@ -22,9 +22,9 @@
 
 -- Upload packages to Marmalade.
 --
--- Requires: cmdargs
+-- Requires: cmdargs aeson http-client http-client-multipart
 --
--- Install these with: cabal install cmdargs aeson http-client http-client-multipart aeson
+-- Install these with: cabal install cmdargs aeson http-client http-client-multipart
 
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings #-}

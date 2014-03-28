@@ -24,6 +24,8 @@
 --
 -- Install these with: cabal install cmdargs aeson http-client http-client-multipart
 
+{-# OPTIONS_GHC -Wall -O2 #-}
+
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveDataTypeable #-}

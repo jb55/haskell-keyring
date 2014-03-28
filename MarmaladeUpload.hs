@@ -52,8 +52,7 @@ import Network.HTTP.Types.Status (Status(statusCode,statusMessage))
 import System.Console.CmdArgs (Data,Typeable,(&=),cmdArgs)
 import System.Exit (ExitCode(ExitSuccess,ExitFailure),exitWith)
 import System.IO.Error (tryIOError)
-import System.Process (readProcessWithExitCode
-                      ,createProcess,waitForProcess,proc)
+import System.Process (readProcessWithExitCode,callProcess)
 import Text.Printf (printf)
 
 -- Program information
@@ -86,16 +85,6 @@ askPassword prompt = do
   return password
 
 -- Process tools
-
-callProcess :: String -> [String] -> IO ()
-callProcess executable args = do
-  (_, _, _, handle) <- createProcess (proc executable args)
-  exitCode <- waitForProcess handle
-  case exitCode of
-    ExitSuccess -> return ()
-    ExitFailure code ->
-        let cmd = executable ++ " " ++ unwords args in
-        ioError (userError (printf "%s (exit code %d)" cmd code))
 
 checkOutput :: String -> [String] -> IO (Either (Int, String) String)
 checkOutput executable args = do

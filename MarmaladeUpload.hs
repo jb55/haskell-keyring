@@ -33,19 +33,21 @@ import Control.Monad (liftM,mzero,void,unless,when)
 import Control.Monad.Error (ErrorT,MonadError,Error(..),runErrorT,throwError)
 import Control.Monad.IO.Class (MonadIO,liftIO)
 import Control.Monad.State (StateT,MonadState,evalStateT,get,gets,put)
-import Data.ByteString.Lazy (ByteString)
 import Data.Aeson (FromJSON,parseJSON
                   ,Value(Object),(.:)
                   ,decode)
+import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.UTF8 as UTF8
 import Network (withSocketsDo)
 import Network.HTTP.Client (Manager,defaultManagerSettings,withManager
                            ,HttpException
                            ,httpLbs
-                           ,Request,parseUrl,requestHeaders,urlEncodedBody
-                           ,Response,responseBody)
+                           ,Request(requestHeaders,checkStatus)
+                           ,parseUrl,urlEncodedBody
+                           ,Response(..))
 import Network.HTTP.Client.MultipartFormData
 import Network.HTTP.Types.Header (hUserAgent)
+import Network.HTTP.Types.Status (Status(statusCode,statusMessage))
 import Prelude hiding (mapM_)
 import System.Console.CmdArgs (Data,Typeable
                               ,cmdArgs,(&=)
@@ -211,6 +213,8 @@ instance FromJSON Token where
 
 data MarmaladeError = IOError IOError
                     | HttpException HttpException
+                    | InvalidResponseStatus Status (Maybe String)
+                    | BadRequest (Maybe String)
                     | InvalidPackage FilePath String
                     | InvalidJSON ByteString
                     | GenericError String
@@ -218,7 +222,15 @@ data MarmaladeError = IOError IOError
 
 instance Show MarmaladeError where
   show (IOError e) = show e
-  show (HttpException e) = show e
+  show (HttpException e) = "HTTP Error: " ++ show e
+  show (InvalidResponseStatus status (Just message)) =
+    printf "Invalid response status: %s (%s)" msgString message
+    where msgString = UTF8.toString (statusMessage status)
+  show (InvalidResponseStatus status Nothing) =
+    printf "Invalid response status: %s" msgString
+    where msgString = UTF8.toString (statusMessage status)
+  show (BadRequest (Just message)) = "Bad Request: " ++ message
+  show (BadRequest Nothing) = "Bad Request"
   show (InvalidPackage f m) = printf "%s: invalid package: %s" f m
   show (InvalidJSON s) = "Invalid JSON response: " ++ (show s)
   show (GenericError m) = "Unknown error: " ++ m
@@ -257,6 +269,12 @@ runMarmalade auth manager m = evalStateT (runErrorT (runM m)) state
                                , marmaladeLoggedIn = False
                                , marmaladeManager = manager}
 
+newtype Message = Message { messageContents :: String }
+
+instance FromJSON Message where
+  parseJSON (Object o) = Message <$> (o .: "message")
+  parseJSON _          = mzero
+
 newtype Upload = Upload { uploadMessage :: String }
 
 instance FromJSON Upload where
@@ -269,19 +287,27 @@ marmaladeURL = "http://marmalade-repo.org"
 makeRequest :: String -> Marmalade Request
 makeRequest endpoint = do
   initReq <- parseUrl (marmaladeURL ++ endpoint)
-  return initReq { requestHeaders = [(hUserAgent, UTF8.fromString appUserAgent)] }
+  return initReq { requestHeaders = [(hUserAgent, UTF8.fromString appUserAgent)]
+                 -- We keep every bad status, because we handle these later
+                 , checkStatus = \_ _ _ -> Nothing
+                 }
+
+parseResponse :: FromJSON c => Response ByteString -> Marmalade c
+parseResponse response =
+  case statusCode status of
+    200 -> case decode body of
+      Just o  -> return o
+      Nothing -> throwError (InvalidJSON body)
+    400 -> throwError (BadRequest message)
+    _ -> throwError (InvalidResponseStatus status message)
+  where body = responseBody response
+        status = responseStatus response
+        message = fmap messageContents (decode body)
 
 -- Package handling
 
 packageMimeTypes :: [String]
 packageMimeTypes = ["application/x-tar", "text/x-lisp"]
-
-parseResponseBody :: FromJSON c => Response ByteString -> Marmalade c
-parseResponseBody response =
-  case decode body of
-    Just o  -> return o
-    Nothing -> throwError (InvalidJSON body)
-  where body = responseBody response
 
 login :: Marmalade (Username, Token)
 login = do
@@ -300,7 +326,7 @@ login = do
                                           ,("password", UTF8.fromString password)])
                      (makeRequest "/v1/users/login")
           response <- guard $ httpLbs request manager
-          parseResponseBody response
+          parseResponse response
 
 verifyPackage :: String -> Marmalade ()
 verifyPackage packageFile = do
@@ -326,7 +352,7 @@ uploadPackage packageFile = do
                                 ,partBS "token" (UTF8.fromString token)
                                 ,partFileSource "package" packageFile]
   response <- guard $ httpLbs request manager
-  parseResponseBody response
+  parseResponse response
 
 -- Authentication
 

@@ -20,6 +20,7 @@
 
 {-# OPTIONS_GHC -Wall -O2 #-}
 
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveDataTypeable #-}
@@ -30,7 +31,6 @@ import qualified Data.Aeson as JSON
 import qualified Data.ByteString.UTF8 as UTF8
 import qualified System.Directory as Dir
 import qualified System.Environment as Env
-import qualified System.Info as SI
 import qualified System.IO as IO
 import qualified Network as N
 import qualified Network.HTTP.Client as C
@@ -95,8 +95,9 @@ checkOutput executable args = do
 
 -- Token storage
 
-getTokenDarwin :: Username -> IO (Maybe Token)
-getTokenDarwin (Username username) = do
+#ifdef DARWIN
+getToken :: Username -> IO (Maybe Token)
+getToken (Username username) = do
   output <- checkOutput "security" ["find-generic-password", "-w"
                                    ,"-a", username
                                    ,"-s", appService]
@@ -104,8 +105,8 @@ getTokenDarwin (Username username) = do
     Left _ -> Nothing -- The item didn't exist
     Right stdout -> Just (Token (head (lines stdout)))
 
-setTokenDarwin :: Username -> Token -> IO ()
-setTokenDarwin (Username username) (Token token) =
+setToken :: Username -> Token -> IO ()
+setToken (Username username) (Token token) =
   callProcess "security" ["add-generic-password"
                          ,"-a", username
                          ,"-s", appService
@@ -113,6 +114,7 @@ setTokenDarwin (Username username) (Token token) =
                          ,"-U"
                          ,"-l", "Marmalade access token"]
 
+#else
 callKWallet :: String -> [String] -> IO (Maybe String)
 callKWallet method args = do
   output <- checkOutput "qdbus-qt4" (["org.kde.kwalletd"
@@ -163,16 +165,12 @@ setTokenKDE username (Token token) = void $ withLocalKWallet setPassword
                                                      ,appService]
 
 tokenProvider :: IO (Username -> IO (Maybe Token), Username -> Token -> IO ())
-tokenProvider = case SI.os of
-                  "darwin" -> return (getTokenDarwin, setTokenDarwin)
-                  "linux" -> do
-                             desktop <- Env.getEnv "XDG_CURRENT_DESKTOP"
-                             return $ case desktop of
-                               "KDE" -> (getTokenKDE, setTokenKDE)
-                               _ -> dummy
-                  _ -> return dummy
-  where
-    dummy = (\_ -> return Nothing, \_ _ -> return ())
+tokenProvider = do
+  desktop <- Env.getEnv "XDG_CURRENT_DESKTOP"
+  return $ case desktop of
+    "KDE" -> (getTokenKDE, setTokenKDE)
+    _ -> dummy
+  where dummy = (\_ -> return Nothing, \_ _ -> return ())
 
 getToken :: Username -> IO (Maybe Token)
 getToken username = do
@@ -183,6 +181,7 @@ setToken :: Username -> Token -> IO ()
 setToken username token = do
   (_, setT) <- tokenProvider
   setT username token
+#endif
 
 -- Marmalade access
 

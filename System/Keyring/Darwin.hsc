@@ -49,7 +49,8 @@ type UInt32 = #type UInt32
 
 #{enum OSStatus, ,
   errSecSuccess = errSecSuccess,
-  errSecItemNotFound = errSecItemNotFound}
+  errSecItemNotFound = errSecItemNotFound,
+  errSecAuthFailed = errSecAuthFailed}
 
 foreign import ccall unsafe "Security/Security.h SecKeychainItemFreeContent"
   c_SecKeychainItemFreeContent :: Ptr () -> CString -> IO OSStatus
@@ -101,7 +102,8 @@ secKeychainFindGenericPassword service username = do
             password <- packCStringLen (password_b, fromIntegral password_l)
             _ <- c_SecKeychainItemFreeContent nullPtr password_b
             return (Just password)
-          _ | result == errSecItemNotFound -> return Nothing
+          _ | result == errSecItemNotFound ||
+              result == errSecAuthFailed -> return Nothing
           _ -> throwKeychainError result
 
 secKeychainAddGenericPassword :: ByteString -> ByteString -> ByteString -> IO ()

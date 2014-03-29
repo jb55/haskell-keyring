@@ -27,31 +27,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-import qualified Data.Aeson as JSON
-import qualified Data.ByteString.UTF8 as UTF8
-import qualified System.Directory as Dir
 import qualified System.Environment as Env
 import qualified System.IO as IO
-import qualified Network as N
-import qualified Network.HTTP.Client as C
 import qualified System.Console.CmdArgs as Args
 
-import Control.Applicative ((<$>))
+import Web.Marmalade
+
 import Control.Exception (bracket)
-import Control.Failure (Failure(..))
-import Control.Monad (liftM,mzero,void,unless,when)
-import Control.Monad.Error (ErrorT,MonadError,Error(..),runErrorT,throwError)
-import Control.Monad.IO.Class (MonadIO,liftIO)
-import Control.Monad.State (StateT,MonadState,evalStateT,get,gets,put)
-import Data.Aeson (FromJSON,Value(Object),(.:))
-import Data.ByteString.Lazy (ByteString)
-import Network.HTTP.Client (Manager,HttpException,Request,Response)
-import Network.HTTP.Client.MultipartFormData
-import Network.HTTP.Types.Header (hUserAgent)
-import Network.HTTP.Types.Status (Status(statusCode,statusMessage))
+import Control.Monad (when)
 import System.Console.CmdArgs (Data,Typeable,(&=),cmdArgs)
 import System.Exit (ExitCode(ExitSuccess,ExitFailure),exitWith)
-import System.IO.Error (tryIOError)
 import System.Process (readProcessWithExitCode,callProcess)
 import Text.Printf (printf)
 
@@ -185,158 +170,6 @@ setToken username token = do
   setT username token
 #endif
 
--- Marmalade access
-
-newtype Username = Username String deriving (Show, Eq)
-newtype Token = Token String deriving (Show, Eq)
-
-instance FromJSON Token where
-  parseJSON (Object o) = Token <$> (o .: "token")
-  parseJSON _          = mzero
-
-data MarmaladeError = IOError IOError
-                    | HttpException HttpException
-                    | InvalidResponseStatus Status (Maybe String)
-                    | BadRequest (Maybe String)
-                    | InvalidPackage FilePath String
-                    | InvalidJSON ByteString
-                    | GenericError String
-                    | UnknownError
-
-instance Show MarmaladeError where
-  show (IOError e) = show e
-  show (HttpException e) = "HTTP Error: " ++ show e
-  show (InvalidResponseStatus status (Just message)) =
-    printf "Invalid response status: %s (%s)" msgString message
-    where msgString = UTF8.toString (statusMessage status)
-  show (InvalidResponseStatus status Nothing) =
-    printf "Invalid response status: %s" msgString
-    where msgString = UTF8.toString (statusMessage status)
-  show (BadRequest (Just message)) = "Bad Request: " ++ message
-  show (BadRequest Nothing) = "Bad Request"
-  show (InvalidPackage f m) = printf "%s: invalid package: %s" f m
-  show (InvalidJSON s) = "Invalid JSON response: " ++ (show s)
-  show (GenericError m) = "Unknown error: " ++ m
-  show UnknownError = "Unknown error"
-
-instance Error MarmaladeError where
-  noMsg = UnknownError
-  strMsg message = GenericError message
-
-guard :: (MonadIO m, MonadError MarmaladeError m) => IO b -> m b
-guard action = do
-  result <- liftIO $ tryIOError action
-  case result of
-    Left e -> throwError (IOError e)
-    Right r -> return r
-
-data Auth = BasicAuth Username (Marmalade String)
-          | TokenAuth Username Token
-
-data MarmaladeState = MarmaladeState { marmaladeAuth :: Auth
-                                     , marmaladeLoggedIn :: Bool
-                                     , marmaladeManager :: Manager }
-
-newtype Marmalade a =
-  Marmalade { runM :: ErrorT MarmaladeError (StateT MarmaladeState IO) a }
-  deriving (Monad,MonadIO,Functor
-           ,MonadState MarmaladeState
-           ,MonadError MarmaladeError)
-
-instance Failure HttpException Marmalade where
-  failure e = throwError (HttpException e)
-
-runMarmalade :: Auth -> Manager -> Marmalade a -> IO (Either MarmaladeError a)
-runMarmalade auth manager m = evalStateT (runErrorT (runM m)) state
-  where state = MarmaladeState { marmaladeAuth = auth
-                               , marmaladeLoggedIn = False
-                               , marmaladeManager = manager}
-
-newtype Message = Message { messageContents :: String }
-
-instance FromJSON Message where
-  parseJSON (Object o) = Message <$> (o .: "message")
-  parseJSON _          = mzero
-
-newtype Upload = Upload { uploadMessage :: String }
-
-instance FromJSON Upload where
-  parseJSON (Object o) = Upload <$> (o .: "message")
-  parseJSON _          = mzero
-
-marmaladeURL :: String
-marmaladeURL = "http://marmalade-repo.org"
-
-makeRequest :: String -> Marmalade Request
-makeRequest endpoint = do
-  initReq <- C.parseUrl (marmaladeURL ++ endpoint)
-  return initReq { C.requestHeaders = [(hUserAgent, UTF8.fromString appUserAgent)]
-                 -- We keep every bad status, because we handle these later
-                 , C.checkStatus = \_ _ _ -> Nothing
-                 }
-
-parseResponse :: FromJSON c => Response ByteString -> Marmalade c
-parseResponse response =
-  case statusCode status of
-    200 -> case JSON.decode body of
-      Just o  -> return o
-      Nothing -> throwError (InvalidJSON body)
-    400 -> throwError (BadRequest message)
-    _ -> throwError (InvalidResponseStatus status message)
-  where body = C.responseBody response
-        status = C.responseStatus response
-        message = fmap messageContents (JSON.decode body)
-
--- Package handling
-
-packageMimeTypes :: [String]
-packageMimeTypes = ["application/x-tar", "text/x-lisp"]
-
-login :: Marmalade (Username, Token)
-login = do
-  state <- get
-  case marmaladeAuth state of
-    BasicAuth username getPassword -> do
-      token <- doLogin username getPassword
-      put state { marmaladeLoggedIn = True
-                , marmaladeAuth = TokenAuth username token }
-      return (username, token)
-    TokenAuth username token -> return (username, token)
-  where doLogin (Username username) getPassword = do
-          manager <- gets marmaladeManager
-          password <- getPassword
-          request <- liftM (C.urlEncodedBody [("name", UTF8.fromString username)
-                                             ,("password", UTF8.fromString password)])
-                     (makeRequest "/v1/users/login")
-          response <- guard $ C.httpLbs request manager
-          parseResponse response
-
-verifyPackage :: String -> Marmalade ()
-verifyPackage packageFile = do
-  -- Force early failure if the package doesn't exist
-  guard $ void $ Dir.getPermissions packageFile
-  output <- guard $ checkOutput "file" ["--brief" ,"--mime-type", packageFile]
-  case output of
-    Left (code, err) -> throwError $
-                        InvalidPackage packageFile
-                        (printf "failed to get mimetype: %s (exit code %d)" err code)
-    Right stdout ->
-      let mimeType = head (lines stdout) in
-      unless (mimeType `elem` packageMimeTypes)
-      (throwError (InvalidPackage packageFile (printf "invalid mimetype %s" mimeType)))
-
-uploadPackage :: FilePath -> Marmalade Upload
-uploadPackage packageFile = do
-  verifyPackage packageFile
-  (Username username, Token token) <- login
-  manager <- gets marmaladeManager
-  request <- makeRequest "/v1/packages" >>=
-             guard.formDataBody [partBS "name" (UTF8.fromString username)
-                                ,partBS "token" (UTF8.fromString token)
-                                ,partFileSource "package" packageFile]
-  response <- guard $ C.httpLbs request manager
-  parseResponse response
-
 -- Authentication
 
 askMarmaladePassword :: String -> Marmalade String
@@ -376,14 +209,14 @@ main :: IO ()
 main = do
   args <- arguments >>= cmdArgs
   auth <- getAuth (argUsername args)
-  result <- withManager' $ \m ->
-    runMarmalade auth m $ do
-      (username, token) <- login
-      upload <- uploadPackage (argPackageFile args)
-      isLoggedIn <- gets marmaladeLoggedIn
-      when isLoggedIn (guard $ setToken username token)
-      guard $ putStrLn (uploadMessage upload)
+  let mustSaveToken = case auth of
+        TokenAuth _ _ -> False
+        _             -> True
+  result <- runMarmalade appUserAgent auth $ do
+    (username, token) <- login
+    upload <- uploadPackage (argPackageFile args)
+    when mustSaveToken (guard $ setToken username token)
+    guard $ putStrLn (uploadMessage upload)
   case result of
     Left e -> exitFailure $ show e
     _ -> return ()
-  where withManager' = N.withSocketsDo.C.withManager C.defaultManagerSettings

@@ -32,27 +32,51 @@ import qualified Data.ByteString.UTF8 as UTF8
 import Control.Exception (bracket)
 import Control.Monad (liftM,when,void)
 import Data.ByteString
-import Data.Int (Int32)
+import Data.Int (Int32, Int64)
+import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
 import Foreign.C
 import Foreign.Ptr
 import Foreign.Storable
-import Foreign.Marshal.Alloc
+import Foreign.Marshal.Alloc (alloca,allocaBytes)
+import Text.Printf (printf)
 
 -- C declarations
 
 #include <Security/Security.h>
 
+type UInt32 = #type UInt32
 type CFTypeRef = Ptr ()
+type CFStringRef = Ptr ()
+type CFStringEncoding = #type CFStringEncoding
+type CFIndex = #type CFIndex
 type SecKeychainItemRef = Ptr ()
 type SecKeychainRef = Ptr ()
 type OSStatus = #type OSStatus
-type UInt32 = #type UInt32
 
 #{enum OSStatus, ,
   errSecSuccess = errSecSuccess,
   errSecItemNotFound = errSecItemNotFound,
   errSecAuthFailed = errSecAuthFailed}
+
+kCFStringEncodingUTF8 :: CFStringEncoding
+kCFStringEncodingUTF8 = #const kCFStringEncodingUTF8
+
+foreign import ccall unsafe "CoreFoundation/CoreFoundation.h CFRelease"
+  c_CFRelease :: CFTypeRef -> IO ()
+
+foreign import ccall unsafe "CoreFoundation/CoreFoundation.h CFStringGetMaximumSizeForEncoding"
+  c_CFStringGetMaximumSizeForEncoding :: CFIndex -> CFStringEncoding -> CFIndex
+
+foreign import ccall unsafe "CoreFoundation/CoreFoundation.h CFStringGetLength"
+  c_CFStringGetLength :: CFStringRef -> CFIndex
+
+foreign import ccall unsafe "CoreFoundation/CoreFoundation.h CFStringGetCString"
+  c_CFStringGetCString :: CFStringRef -> CString -> CFIndex -> CFStringEncoding
+                       -> IO Bool
+
+foreign import ccall unsafe "Security/Security.h SecCopyErrorMessageString"
+  c_SecCopyErrorMessageString :: OSStatus -> Ptr () -> IO CFStringRef
 
 foreign import ccall unsafe "Security/Security.h SecKeychainItemFreeContent"
   c_SecKeychainItemFreeContent :: Ptr () -> CString -> IO OSStatus
@@ -76,10 +100,28 @@ foreign import ccall unsafe "Security/Security.h SecKeychainAddGenericPassword"
 -- C wrappers
 
 throwKeychainError :: OSStatus -> IO a
-throwKeychainError _ =
-  -- FIXME: Use custom error type
-  -- FIXME: Extract error message
-  ioError (userError "Keychain failed")
+throwKeychainError status = do
+  messageResult <- secKeychainCopyErrorMessageString status
+  let message = fromMaybe "no error message" (fmap UTF8.toString messageResult)
+  ioError (userError (printf "Keychain access failed: %s (code %d)" message status))
+
+secKeychainCopyErrorMessageString :: OSStatus -> IO (Maybe ByteString)
+secKeychainCopyErrorMessageString status =
+  bracket
+  (c_SecCopyErrorMessageString status nullPtr)
+  (\s -> when (s /= nullPtr) (c_CFRelease s))
+  (convertCFString)
+  where
+    convertCFString s | s == nullPtr = return Nothing
+    convertCFString s = do
+      let encoding = kCFStringEncodingUTF8
+      let bufferSize = c_CFStringGetMaximumSizeForEncoding (c_CFStringGetLength s) encoding
+      allocaBytes (fromIntegral bufferSize) (getCString s encoding bufferSize)
+    getCString s encoding bufferSize buffer = do
+      result <- c_CFStringGetCString s buffer bufferSize encoding
+      if result
+        then liftM Just (packCString buffer)
+        else return Nothing
 
 secKeychainFindGenericPassword :: ByteString -> ByteString -> IO (Maybe ByteString)
 secKeychainFindGenericPassword service username = do

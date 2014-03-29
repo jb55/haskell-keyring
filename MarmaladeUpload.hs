@@ -18,20 +18,19 @@
 -- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 -- THE SOFTWARE.
 
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+
+import qualified System.Keyring as K
+import Web.Marmalade
 
 import qualified System.Environment as Env
 import qualified System.IO as IO
 import qualified System.Console.CmdArgs as Args
 
-import Web.Marmalade
-
 import Control.Exception (bracket)
 import Control.Monad (when)
 import System.Console.CmdArgs (Data,Typeable,(&=),cmdArgs)
-import System.Exit (ExitCode(ExitSuccess,ExitFailure),exitWith)
-import System.Process (readProcessWithExitCode,callProcess)
+import System.Exit (ExitCode(ExitFailure),exitWith)
 import Text.Printf (printf)
 
 import Paths_marmalade_upload (version)
@@ -65,105 +64,6 @@ askPassword prompt = do
   putChar '\n'
   return password
 
--- Process tools
-
-checkOutput :: String -> [String] -> IO (Either (Int, String) String)
-checkOutput executable args = do
-  output <- readProcessWithExitCode executable args []
-  return $ case output of
-             (ExitSuccess, stdout, _)      -> Right stdout
-             (ExitFailure code, _, stderr) -> Left (code, stderr)
-
--- Token storage
-
-#ifdef DARWIN
-getToken :: Username -> IO (Maybe Token)
-getToken (Username username) = do
-  output <- checkOutput "security" ["find-generic-password", "-w"
-                                   ,"-a", username
-                                   ,"-s", appService]
-  return $ case output of
-    Left _ -> Nothing -- The item didn't exist
-    Right stdout -> Just (Token (head (lines stdout)))
-
-setToken :: Username -> Token -> IO ()
-setToken (Username username) (Token token) =
-  callProcess "security" ["add-generic-password"
-                         ,"-a", username
-                         ,"-s", appService
-                         ,"-w", token
-                         ,"-U"
-                         ,"-l", "Marmalade access token"]
-
-#else
-callKWallet :: String -> [String] -> IO (Maybe String)
-callKWallet method args = do
-  output <- checkOutput "qdbus-qt4" (["org.kde.kwalletd"
-                                     ,"/modules/kwalletd"
-                                     ,method] ++ args)
-  case output of
-    Left _       -> return Nothing
-    Right stdout -> return $ Just (head (lines stdout))
-
-openNetworkKWallet :: IO (Maybe String)
-openNetworkKWallet = do
-  walletName <- callKWallet "networkWallet" []
-  maybe (return Nothing) openWallet walletName
-  where
-    openWallet name = callKWallet "open" [name, "0", appService]
-
-closeKWallet :: String -> IO ()
-closeKWallet handle = void $ callKWallet "close" [handle, appService]
-
-withLocalKWallet :: (String -> IO (Maybe a)) -> IO (Maybe a)
-withLocalKWallet action = bracket openNetworkKWallet close act
-  where
-    act = maybe (return Nothing) action
-    close = maybe (return ()) closeKWallet
-
-getKWalletKey :: Username -> String
-getKWalletKey (Username username) = username ++ "@" ++ appService
-
-getTokenKDE :: Username -> IO (Maybe Token)
-getTokenKDE username = withLocalKWallet getPassword
-  where
-    getPassword handle = do
-      password <- callKWallet "readPassword" [handle, "Passwords"
-                                             ,getKWalletKey username
-                                             ,appService]
-      return $ case password of
-        Nothing -> Nothing
-        Just "" -> Nothing
-        Just t  -> Just $ Token t
-
-setTokenKDE :: Username -> Token -> IO ()
-setTokenKDE username (Token token) = void $ withLocalKWallet setPassword
-  where
-    setPassword handle = callKWallet "writePassword" [handle
-                                                     ,"Passwords"
-                                                     ,getKWalletKey username
-                                                     ,token
-                                                     ,appService]
-
-tokenProvider :: IO (Username -> IO (Maybe Token), Username -> Token -> IO ())
-tokenProvider = do
-  desktop <- Env.getEnv "XDG_CURRENT_DESKTOP"
-  return $ case desktop of
-    "KDE" -> (getTokenKDE, setTokenKDE)
-    _ -> dummy
-  where dummy = (\_ -> return Nothing, \_ _ -> return ())
-
-getToken :: Username -> IO (Maybe Token)
-getToken username = do
-  (getT, _) <- tokenProvider
-  getT username
-
-setToken :: Username -> Token -> IO ()
-setToken username token = do
-  (_, setT) <- tokenProvider
-  setT username token
-#endif
-
 -- Authentication
 
 askMarmaladePassword :: String -> Marmalade String
@@ -172,9 +72,9 @@ askMarmaladePassword username = do
 
 getAuth :: String -> IO Auth
 getAuth username = do
-  result <- getToken (Username username)
+  result <- K.getPassword (K.Service appService) (K.Username username)
   return $ case result of
-    Just token -> (TokenAuth (Username username) token)
+    Just (K.Password token) -> (TokenAuth (Username username) (Token token))
     Nothing -> (BasicAuth (Username username) (askMarmaladePassword username))
 
 -- Arguments handling
@@ -207,9 +107,13 @@ main = do
         TokenAuth _ _ -> False
         _             -> True
   result <- runMarmalade appUserAgent auth $ do
-    (username, token) <- login
+    ((Username username), (Token token)) <- login
     upload <- uploadPackage (argPackageFile args)
-    when mustSaveToken (guard $ setToken username token)
+    when mustSaveToken $
+      guard (K.setPassword
+             (K.Service appService)
+             (K.Username username)
+             (K.Password token))
     guard $ putStrLn (uploadMessage upload)
   case result of
     Left e -> exitFailure $ show e

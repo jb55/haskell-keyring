@@ -29,6 +29,8 @@ import System.Keyring.Types
 
 import qualified Data.ByteString.UTF8 as UTF8
 
+import Control.Exception (bracket)
+import Control.Monad (liftM,when,void)
 import Data.ByteString
 import Data.Int (Int32)
 import Data.Word (Word32)
@@ -95,16 +97,18 @@ secKeychainFindGenericPassword service username = do
                    (fromIntegral c_user_l) c_user_b
                    password_l_buf password_buf
                    nullPtr      -- Ignore the item reference
-        case result of
-          _ | result == errSecSuccess -> do
-            password_b <- peek password_buf
-            password_l <- peek password_l_buf
-            password <- packCStringLen (password_b, fromIntegral password_l)
-            _ <- c_SecKeychainItemFreeContent nullPtr password_b
-            return (Just password)
-          _ | result == errSecItemNotFound ||
-              result == errSecAuthFailed -> return Nothing
-          _ -> throwKeychainError result
+        (bracket (peek password_buf)
+         (\pw -> when (pw /= nullPtr)
+                 (void $ c_SecKeychainItemFreeContent nullPtr pw))
+         (handleResult result password_l_buf))
+    handleResult :: OSStatus -> Ptr UInt32 -> CString -> IO (Maybe ByteString)
+    handleResult result password_l_buf password_b = case result of
+      _ | result == errSecSuccess -> do
+        password_l <- peek password_l_buf
+        liftM Just (packCStringLen (password_b, fromIntegral password_l))
+      _ | result == errSecItemNotFound ||
+          result == errSecAuthFailed -> return Nothing
+      _ -> throwKeychainError result
 
 secKeychainAddGenericPassword :: ByteString -> ByteString -> ByteString -> IO ()
 secKeychainAddGenericPassword service username password = do

@@ -21,6 +21,7 @@
 {-# OPTIONS_HADDOCK hide #-}
 
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 
 -- |Access to the OS X Key chain
 module System.Keyring.Darwin (setPassword,getPassword) where
@@ -29,11 +30,11 @@ import System.Keyring.Types
 
 import qualified Data.ByteString.UTF8 as UTF8
 
-import Control.Exception (bracket)
+import Control.Exception (Exception,bracket,throwIO)
 import Control.Monad (liftM,when,void)
 import Data.ByteString
 import Data.Int (Int32, Int64)
-import Data.Maybe (fromMaybe)
+import Data.Typeable (Typeable)
 import Data.Word (Word32)
 import Foreign.C
 import Foreign.Ptr
@@ -99,11 +100,22 @@ foreign import ccall unsafe "Security/Security.h SecKeychainAddGenericPassword"
 
 -- C wrappers
 
+data KeychainException = KeychainError (Maybe String) OSStatus
+                          deriving Typeable
+
+instance Show KeychainException where
+  show (KeychainError Nothing status) =
+    printf "Keychain access failed: status %s" status
+  show (KeychainError (Just msg) status) =
+    printf "Keychain access failed: %s (status %d)" msg status
+
+instance Exception KeychainException
+
 throwKeychainError :: OSStatus -> IO a
 throwKeychainError status = do
   messageResult <- secKeychainCopyErrorMessageString status
-  let message = fromMaybe "no error message" (fmap UTF8.toString messageResult)
-  ioError (userError (printf "Keychain access failed: %s (code %d)" message status))
+  let message = (fmap UTF8.toString messageResult)
+  throwIO (KeychainError message status)
 
 secKeychainCopyErrorMessageString :: OSStatus -> IO (Maybe ByteString)
 secKeychainCopyErrorMessageString status =

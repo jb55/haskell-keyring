@@ -1,3 +1,8 @@
+/Setup.hs
+
+# Cabal build data
 /dist/
 
-/Setup.hs
+# Cabal sandbox files
+/.cabal-sandbox/
+/cabal.sandbox.config

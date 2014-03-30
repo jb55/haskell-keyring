@@ -18,6 +18,8 @@
 -- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 -- THE SOFTWARE.
 
+{-# LANGUAGE DeriveDataTypeable #-}
+
 {-# OPTIONS_HADDOCK hide #-}
 
 -- |Access to the KDE keychain
@@ -25,55 +27,109 @@ module System.Keyring.Unix.KDE (getPassword,setPassword) where
 
 import System.Keyring.Types
 
-import Control.Exception (bracket)
+import Control.Exception (Exception,throwIO,bracket)
 import Control.Monad (void)
-import System.Exit (ExitCode(ExitSuccess))
-import System.Process (readProcessWithExitCode)
+import Data.Maybe (fromJust)
+import Data.Int (Int32,Int64)
+import Data.Typeable (Typeable)
+import DBus
+import DBus.Client
+import Prelude hiding (error)
+import Text.Printf (printf)
 
-callKWallet :: String -> [String] -> IO (Maybe String)
-callKWallet method methodArgs = do
-  output <- readProcessWithExitCode "qdbus-qt4" args []
-  return $ case output of
-    (ExitSuccess, stdout, _) -> Just (head (lines stdout))
-    _ -> Nothing
-  where args = (["org.kde.kwalletd", "/modules/kwalletd", method]
-                ++ methodArgs)
+data KWalletException = KWalletException ErrorName String
+                      deriving Typeable
 
-openNetworkKWallet :: Service -> IO (Maybe String)
-openNetworkKWallet (Service service) = do
-  walletName <- callKWallet "networkWallet" [service]
-  maybe (return Nothing) openWallet walletName
-  where
-    openWallet name = callKWallet "open" [name, "0", service]
+instance Show KWalletException where
+  show (KWalletException name message) =
+    printf "KWallet error: %s: %s" (formatErrorName name) message
 
-closeKWallet :: Service -> String -> IO ()
-closeKWallet (Service service) handle =
-  void $ callKWallet "close" [handle, service]
-
-withLocalKWallet :: Service -> (String -> IO (Maybe a)) -> IO (Maybe a)
-withLocalKWallet service action = bracket (openNetworkKWallet service) close act
-  where
-    act = maybe (return Nothing) action
-    close = maybe (return ()) (closeKWallet service)
+instance Exception KWalletException
 
 getKWalletKey :: Service -> Username -> String
 getKWalletKey (Service service) (Username username) = username ++ "@" ++ service
 
+withSessionBus :: (Client -> IO a) -> IO a
+withSessionBus = bracket connectSession disconnect
+
+
+newtype AppID = AppID String
+
+instance IsVariant AppID where
+  toVariant (AppID appID) = toVariant appID
+  fromVariant value = fmap AppID (fromVariant value)
+
+newtype Wallet = Wallet Int32
+
+instance IsVariant Wallet where
+  toVariant (Wallet handle) = toVariant handle
+  fromVariant value = fmap Wallet (fromVariant value)
+
+callKWalletD :: Client -> String -> [Variant] -> IO [Variant]
+callKWalletD client methodName args = do
+  result <- call client message
+  case result of
+    Left error -> throwIO (KWalletException
+                           (methodErrorName error)
+                           (methodErrorMessage error))
+    Right reply -> return (methodReturnBody reply)
+  where memberName = memberName_ methodName
+        path = objectPath_ "/modules/kwalletd"
+        interface = interfaceName_ "org.kde.KWallet"
+        busName = busName_ "org.kde.kwalletd"
+        message = (methodCall path interface memberName) {
+          methodCallDestination = Just busName,
+          methodCallBody = args}
+
+openWallet :: Client -> String -> AppID -> IO Wallet
+openWallet client walletName appID = do
+  reply <- callKWalletD client "open" [toVariant walletName
+                                      , toVariant (0::Int64)
+                                      , toVariant appID]
+  return (fromJust (fromVariant (head reply)))
+
+closeWallet :: Client -> AppID -> Wallet -> IO ()
+closeWallet client appID wallet =
+  void (callKWalletD client "close" [toVariant wallet
+                                    ,toVariant False
+                                    ,toVariant appID])
+
+withNetworkWallet :: Service -> (Client -> Wallet -> IO a) -> IO a
+withNetworkWallet (Service service) action = withSessionBus openNetworkWallet
+  where
+    openNetworkWallet client = do
+      reply <- callKWalletD client "networkWallet" []
+      let name = fromJust (fromVariant (head reply))
+      runAction client name
+    runAction client name = bracket
+      (openWallet client name (AppID service))
+      (closeWallet client (AppID service))
+      (action client)
+
 getPassword :: Service -> Username -> IO (Maybe Password)
-getPassword service username = withLocalKWallet service (readPassword service)
+getPassword service username = withNetworkWallet service readPassword
   where
     key = getKWalletKey service username
-    readPassword (Service app) handle = do
-      password <- callKWallet "readPassword" [handle, "Passwords", key, app]
-      return $ case password of
+    readPassword client wallet = do
+      let (Service appID) = service
+      reply <- callKWalletD client "readPassword" [toVariant wallet
+                                                  ,toVariant "Passwords"
+                                                  ,toVariant key
+                                                  ,toVariant appID]
+      return $ case fromVariant (head reply) of
         Nothing -> Nothing
-        Just "" -> Nothing
-        Just t  -> Just $ Password t
+        Just [] -> Nothing
+        Just pw -> Just (Password pw)
 
 setPassword :: Service -> Username -> Password -> IO ()
 setPassword service username (Password password) =
-  void $ withLocalKWallet service (writePassword service)
+  withNetworkWallet service writePassword
   where
     key = getKWalletKey service username
-    writePassword (Service app) handle =
-      callKWallet "writePassword" [handle, "Passwords", key, password, app]
+    writePassword client wallet = do
+      let (Service appID) = service
+      void $ callKWalletD client "writePassword" [toVariant wallet
+                                                 ,toVariant "Passwords"
+                                                 ,toVariant key
+                                                 ,toVariant password
+                                                 ,toVariant appID]

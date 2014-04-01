@@ -13,7 +13,7 @@ description:
   The "System.Keyring" module provides the high-level functions 'getPassword'
   and 'setPassword' to easily get and set passwords in the keyring of the
   current user.  The appropriate backend is chosen automatically.
-  
+
 homepage:            https://github.com/lunaryorn/haskell-keyring
 bug-reports:         https://github.com/lunaryorn/haskell-keyring/issues
 license:             MIT
@@ -35,8 +35,13 @@ source-repository this
   location:          https://github.com/lunaryorn/haskell-keyring.git
   tag:               0.1.0.0
 
-flag All
+flag AllBackends
   description:         Try to build as many backends as possible
+  manual:              True
+  default:             False
+
+flag Example
+  description:         Build an example executable
   manual:              True
   default:             False
 
@@ -56,7 +61,19 @@ library
                        bytestring >=0.10 && <0.11
      frameworks:       Security CoreFoundation
 
-  if !os(darwin) || flag(all)
+  if !os(darwin) || flag(AllBackends)
      exposed-modules:  System.Keyring.Unix
                        System.Keyring.Unix.KDE
      build-depends:    udbus >=0.2 && <0.3
+
+executable keyring-example
+  main-is:             Example.hs
+  default-language:    Haskell2010
+  ghc-options:         -Wall -Werror -O2
+  build-depends:       base,
+                       keyring
+
+  if flag(Example)
+     buildable:        True
+  else
+     buildable:        False

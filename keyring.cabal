@@ -23,6 +23,11 @@ source-repository this
   location:          https://github.com/lunaryorn/haskell-keyring.git
   tag:               0.1.0.0
 
+flag All
+  description:         Try to build as many backends as possible
+  manual:              True
+  default:             False
+
 library
   exposed-modules:     System.Keyring
   other-modules:       System.Keyring.Types
@@ -36,7 +41,8 @@ library
      build-depends:    utf8-string >=0.3 && <0.4,
                        bytestring >=0.10 && <0.11
      frameworks:       Security CoreFoundation
-  else
+
+  if !os(darwin) || flag(all)
      exposed-modules:  System.Keyring.Unix
                        System.Keyring.Unix.KDE
      build-depends:    udbus >=0.2 && <0.3

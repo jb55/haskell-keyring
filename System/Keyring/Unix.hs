@@ -30,17 +30,20 @@ import qualified System.Keyring.Unix.KDE as KDE
 
 import System.Keyring.Types
 
+import Control.Exception (throwIO)
 import System.Environment (getEnv)
 
 -- |The keyring provider to use.
+--
+-- Throws 'KeyringMissingBackendError' if no keyring backend is available on the
+-- current system.
 provider :: IO (Service -> Username -> IO (Maybe Password)
                ,Service -> Username -> Password -> IO ())
 provider = do
   desktop <- getEnv "XDG_CURRENT_DESKTOP"
-  return $ case desktop of
-    "KDE" -> (KDE.getPassword, KDE.setPassword)
-    _ -> dummy
-  where dummy = (\_ _ -> return Nothing, \_ _ _ -> return ())
+  case desktop of
+    "KDE" -> return (KDE.getPassword, KDE.setPassword)
+    _ -> throwIO KeyringMissingBackendError
 
 -- |@'getPassword' service username@ gets a password from the current keyring.
 --

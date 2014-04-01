@@ -28,7 +28,7 @@ module System.Keyring.Unix.KDE (getPassword,setPassword) where
 import System.Keyring.Types
 
 import Control.Exception (Exception,throwIO,bracket,catch)
-import Control.Monad (void)
+import Control.Monad (void,unless)
 import Data.Int (Int32)
 import Data.Typeable (Typeable)
 import Network.DBus (DBusConnection,BusName(..)
@@ -39,19 +39,22 @@ import Network.DBus (DBusConnection,BusName(..)
                     ,returnBody,packedStringToString)
 import Text.Printf (printf)
 
-data KWalletException = KWalletDBusError ErrorName (Maybe String)
-                      | KWalletInvalidReturn [Type] [Type]
-                      deriving Typeable
+data KWalletError = KWalletDBusError ErrorName (Maybe String)
+                  | KWalletOperationError String
+                  | KWalletInvalidReturn [Type] [Type]
+                  deriving Typeable
 
-instance Show KWalletException where
+instance Show KWalletError where
   show (KWalletDBusError (ErrorName name) Nothing) =
-    printf "KWallet error: DBus error %s" name
+    "KWallet error: DBus error " ++ name
   show (KWalletDBusError (ErrorName name) (Just message)) =
     printf "KWallet error: DBus error %s: %s" name message
+  show (KWalletOperationError message) =
+    "KWallet error: Operation failed: " ++ message
   show (KWalletInvalidReturn expected actual) =
     printf "KWallet error: invalid return: expected %s, got %s" (show expected) (show actual)
 
-instance Exception KWalletException
+instance Exception KWalletError
 
 throwInvalidReturn :: [Type] -> [DBusValue] -> IO a
 throwInvalidReturn expected actual =
@@ -151,10 +154,30 @@ getPassword (Service service) username = withNetworkWallet appID fetchPassword
 
 setPassword :: Service -> Username -> Password -> IO ()
 setPassword (Service service) username (Password password) =
-  withNetworkWallet appID writePassword
+  withNetworkWallet appID storePassword
   where
     appID = AppID service
     key = getKWalletKey appID username
+    storePassword connection wallet = do
+      folderExists <- hasFolder connection wallet
+      unless folderExists (createFolder connection wallet)
+      writePassword connection wallet
+    hasFolder connection wallet = do
+      reply <- callKWalletD connection "hasFolder" [toDBusValue wallet
+                                                   ,toDBusValue "Passwords"
+                                                   ,toDBusValue appID]
+      case reply of
+        [DBusBoolean b] -> return b
+        _ -> throwInvalidReturn [SigBool] reply
+    createFolder connection wallet = do
+      reply <- callKWalletD connection "createFolder" [toDBusValue wallet
+                                                      ,toDBusValue "Passwords"
+                                                      ,toDBusValue appID]
+      case reply of
+        [DBusBoolean b] -> do
+          unless b (throwIO (KWalletOperationError "Could not create Passwords folder"))
+          return ()
+        _ -> throwInvalidReturn [SigBool] reply
     writePassword connection wallet =
       void $ callKWalletD connection "writePassword" [toDBusValue wallet
                                                      ,toDBusValue "Passwords"

@@ -30,8 +30,17 @@ import qualified System.Keyring.Unix.KDE as KDE
 
 import System.Keyring.Types
 
-import Control.Exception (throwIO)
+import Control.Exception (throwIO,handleJust)
+import Control.Monad (liftM)
 import System.Environment (getEnv)
+import System.IO.Error (isDoesNotExistError)
+
+getEnvSafe :: String -> IO (Maybe String)
+getEnvSafe env =
+  handleJust isVariableMissing (\_ -> return Nothing) (liftM Just (getEnv env))
+  where isVariableMissing e =
+          if isDoesNotExistError e then Just () else Nothing
+
 
 -- |The keyring provider to use.
 --
@@ -40,9 +49,9 @@ import System.Environment (getEnv)
 provider :: IO (Service -> Username -> IO (Maybe Password)
                ,Service -> Username -> Password -> IO ())
 provider = do
-  desktop <- getEnv "XDG_CURRENT_DESKTOP"
+  desktop <- getEnvSafe "XDG_CURRENT_DESKTOP"
   case desktop of
-    "KDE" -> return (KDE.getPassword, KDE.setPassword)
+    Just "KDE" -> return (KDE.getPassword, KDE.setPassword)
     _ -> throwIO KeyringMissingBackendError
 
 -- |@'getPassword' service username@ gets a password from the current keyring.

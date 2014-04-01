@@ -41,6 +41,7 @@ flag All
   default:             False
 
 library
+  hs-source-dirs:      src/
   ghc-options:         -Wall -Werror -O2
   exposed-modules:     System.Keyring
   other-modules:       System.Keyring.Types

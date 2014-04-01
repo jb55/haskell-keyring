@@ -25,15 +25,15 @@ module System.Keyring.Unix.KDE
        (
          -- * KWallet access
          getPassword,setPassword
-         -- * Error handling
+         -- * Errors
        , KWalletError(..)) where
 
 import System.Keyring.Types
 
-import Control.Exception (Exception,throwIO,bracket,catch)
+import Control.Exception (Exception(..),throwIO,bracket,catch)
 import Control.Monad (void,unless)
 import Data.Int (Int32)
-import Data.Typeable (Typeable)
+import Data.Typeable (Typeable,cast)
 import Network.DBus (DBusConnection,BusName(..)
                     ,DBusCall(..),ObjectPath(..),Interface(..),Member(..)
                     ,DBusTypeable(..),Type(..),DBusValue(..)
@@ -43,14 +43,24 @@ import Network.DBus (DBusConnection,BusName(..)
 import Text.Printf (printf)
 
 data KWalletError = KWalletDBusError ErrorName (Maybe String)
-                    -- ^An error received over DBus error, with an error name
-                    -- and a message
+                    -- ^@'KWalletDBusError' name message@ denotes an error
+                    -- received over DBus.
+                    --
+                    -- @name@ is the proper name of the error, and @message@ is
+                    -- a human-readable error message.
                   | KWalletOperationError String
-                    -- ^A KWallet operation failed, with a message
-                  | KWalletInvalidReturn
-                    [Type]      -- ^The expected return signature
-                    [Type]      -- ^The actual return signature
-                    -- ^An unexpected return value was received.
+                    -- ^@'KWalletOperationError' message@ denotes a failed
+                    -- KWallet operation.
+                    --
+                    -- @message@ is a human-readable error message with details
+                    -- on the errpr.
+                  | KWalletInvalidReturn [Type] [Type]
+                    -- ^@'KWalletInvalidReturn' expected actual@ denotes an
+                    -- unexpected return value from a DBus method call.
+                    --
+                    -- @expected@ is the expected type signature, and @actual@
+                    -- is the signature which was actually received from the
+                    -- remote DBus object.
                   deriving Typeable
 
 instance Show KWalletError where
@@ -63,7 +73,11 @@ instance Show KWalletError where
   show (KWalletInvalidReturn expected actual) =
     printf "KWallet error: invalid return: expected %s, got %s" (show expected) (show actual)
 
-instance Exception KWalletError
+instance Exception KWalletError where
+  toException = toException . KeyringError
+  fromException x = do
+    KeyringError e <- fromException x
+    cast e
 
 throwInvalidReturn :: [Type] -> [DBusValue] -> IO a
 throwInvalidReturn expected actual =
@@ -141,6 +155,8 @@ withNetworkWallet appID action = withSessionBus openNetworkWallet
 --
 -- @username@ is the name of the user whose password to get.  @service@
 -- identifies the application which fetches the password.
+--
+-- This function throws 'KWalletError' if access to KWallet failed.
 getPassword :: Service -> Username -> IO (Maybe Password)
 getPassword (Service service) username = withNetworkWallet appID fetchPassword
   where
@@ -172,6 +188,8 @@ getPassword (Service service) username = withNetworkWallet appID fetchPassword
 --
 -- @username@ is the name of the user whose password to set.  @service@
 -- identifies the application which sets the password.
+--
+-- This function throws 'KWalletError' if access to KWallet failed.
 setPassword :: Service -> Username -> Password -> IO ()
 setPassword (Service service) username (Password password) =
   withNetworkWallet appID storePassword

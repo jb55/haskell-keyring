@@ -33,10 +33,16 @@
 module System.Keyring
        (
          -- * Data types
-         Service(..),Username(..),Password(..)
+         Service(..)
+       , Username(..)
+       , Password(..)
          -- * Password storage
-       , getPassword,setPassword)
-       where
+       , getPassword
+       , setPassword
+         -- * Exceptions
+       , KeyringError(..)
+       , KeyringMissingBackendError(..)
+       ) where
 
 import System.Keyring.Types
 
@@ -48,9 +54,21 @@ import qualified System.Keyring.Unix as Backend
 
 -- |@'getPassword' service username@ gets the password for the given @username@
 -- and @service@ from the keyring.
+--
+-- @service@ identifies the application which gets the password.
+--
+-- This function throws 'KeyringMissingBackendError' is no keyring
+-- implementation exists for the current system and environment, and
+-- 'KeyringError' if access to the keyring failed.
 getPassword :: Service -> Username -> IO (Maybe Password)
 getPassword = Backend.getPassword
 
 -- |@'setPassword' service username password@ adds @password@ to the keyring.
+--
+-- @service@ identifies the application which sets the password.
+--
+-- This function throws 'KeyringMissingBackendError' is no keyring
+-- implementation exists for the current system and environment, and
+-- 'KeyringError' if access to the keyring failed.
 setPassword :: Service -> Username -> Password -> IO ()
 setPassword = Backend.setPassword

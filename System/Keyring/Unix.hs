@@ -46,6 +46,10 @@ provider = do
 --
 -- @username@ is the name of the user whose password to get.  @service@
 -- identifies the application which fetches the password.
+--
+-- This function throws 'KeyringMissingBackendError' is no keyring
+-- implementation exists for the current system and environment, and
+-- 'KeyringError' if access to the keyring failed.
 getPassword :: Service -> Username -> IO (Maybe Password)
 getPassword service username = do
   (get, _) <- provider
@@ -56,6 +60,10 @@ getPassword service username = do
 --
 -- @username@ is the name of the user whose password to set.  @service@
 -- identifies the application which sets the password.
+--
+-- This function throws 'KeyringMissingBackendError' is no keyring
+-- implementation exists for the current system and environment, and
+-- 'KeyringError' if access to the keyring failed.
 setPassword :: Service -> Username -> Password -> IO ()
 setPassword service username password = do
   (_, set) <- provider

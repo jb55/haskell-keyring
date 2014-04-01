@@ -18,10 +18,24 @@
 -- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 -- THE SOFTWARE.
 
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+
 -- |Basic types for keyring access.
 module System.Keyring.Types
-       (Service(..), Username(..), Password(..))
+       (
+         -- * Data types
+         Service(..)
+       , Username(..)
+       , Password(..)
+         -- * Exceptions
+       , KeyringError(..)
+       , KeyringMissingBackendError(..)
+       )
        where
+
+import Control.Exception (SomeException,Exception(..))
+import Data.Typeable (Typeable,cast)
 
 -- |A service which uses the keyring
 --
@@ -34,3 +48,25 @@ newtype Username = Username String
 
 -- |A password
 newtype Password = Password String
+
+-- |Base type for Keyring exceptions
+data KeyringError = forall e . Exception e => KeyringError e
+                  deriving Typeable
+
+instance Show KeyringError where
+  show (KeyringError e) = show e
+
+instance Exception KeyringError
+
+-- |Exception indicating a missing backend.
+data KeyringMissingBackendError = KeyringMissingBackendError
+                              deriving (Typeable)
+
+instance Show KeyringMissingBackendError where
+  show KeyringMissingBackendError = "Keyring error: no backend available"
+
+instance Exception KeyringMissingBackendError where
+  toException = toException . KeyringError
+  fromException x = do
+    KeyringError e <- fromException x
+    cast e

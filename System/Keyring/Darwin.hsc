@@ -31,18 +31,19 @@ module System.Keyring.Darwin
          setPassword
        , getPassword
          -- * Error handling
-       , KeychainError
+       , KeychainError(..)
+       , OSStatus
        ) where
 
 import System.Keyring.Types
 
 import qualified Data.ByteString.UTF8 as UTF8
 
-import Control.Exception (Exception,bracket,throwIO)
+import Control.Exception (Exception(..),bracket,throwIO)
 import Control.Monad (liftM,when,void)
 import Data.ByteString
 import Data.Int (Int32, Int64)
-import Data.Typeable (Typeable)
+import Data.Typeable (Typeable,cast)
 import Data.Word (Word32)
 import Foreign.C
 import Foreign.Ptr
@@ -117,7 +118,11 @@ instance Show KeychainError where
   show (KeychainError (Just msg) status) =
     printf "Keychain access failed: %s (status %d)" msg status
 
-instance Exception KeychainError
+instance Exception KeychainError where
+  toException = toException . KeyringError
+  fromException x = do
+    KeyringError e <- fromException x
+    cast e
 
 throwKeychainError :: OSStatus -> IO a
 throwKeychainError status = do
@@ -193,6 +198,8 @@ secKeychainAddGenericPassword service username password = do
 --
 -- @username@ is the name of the user whose password to set.  @service@
 -- identifies the application which sets the password.
+--
+-- This function throws 'KeychainError' if access to the Keychain failed.
 setPassword :: Service -> Username -> Password -> IO ()
 setPassword (Service service) (Username username) (Password password) =
   secKeychainAddGenericPassword service_bytes username_bytes password_bytes
@@ -202,6 +209,8 @@ setPassword (Service service) (Username username) (Password password) =
 
 -- |@'getPassword' service username@ gets password for a given @username@ and
 -- @service@.  If the password was not found, return 'Nothing' instead.
+--
+-- This function throws 'KeychainError' if access to the Keychain failed.
 getPassword :: Service -> Username -> IO (Maybe Password)
 getPassword (Service service) (Username username) = do
   password_bytes <- secKeychainFindGenericPassword service_bytes username_bytes

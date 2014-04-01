@@ -125,19 +125,28 @@ withNetworkWallet appID action = withSessionBus openNetworkWallet
       (action connection)
 
 getPassword :: Service -> Username -> IO (Maybe Password)
-getPassword (Service service) username = withNetworkWallet appID readPassword
+getPassword (Service service) username = withNetworkWallet appID fetchPassword
   where
     appID = AppID service
     key = getKWalletKey appID username
+    fetchPassword connection wallet = do
+      hasPassword <- hasEntry connection wallet
+      if hasPassword then readPassword connection wallet else return Nothing
+    hasEntry connection wallet = do
+      reply <- callKWalletD connection "hasEntry" [toDBusValue wallet
+                                                  ,toDBusValue "Passwords"
+                                                  ,toDBusValue key
+                                                  ,toDBusValue appID]
+      case reply of
+        [DBusBoolean b] -> return b
+        _ -> throwInvalidReturn [SigBool] reply
     readPassword connection wallet = do
       reply <- callKWalletD connection "readPassword" [toDBusValue wallet
                                                       ,toDBusValue "Passwords"
                                                       ,toDBusValue key
                                                       ,toDBusValue appID]
       case reply of
-        [DBusString s] -> return $ case packedStringToString s of
-          [] -> Nothing
-          pw -> Just (Password pw)
+        [DBusString s] -> return (Just (Password (packedStringToString s)))
         _ -> throwInvalidReturn [SigString] reply
 
 setPassword :: Service -> Username -> Password -> IO ()

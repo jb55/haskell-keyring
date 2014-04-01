@@ -1,7 +1,7 @@
 haskell-keyring
 ===============
 
-[![hackage][badge-hackage]][hackage] [![license][badge-license]]][license]
+[![hackage][badge-hackage]][hackage] [![license][badge-license]][license]
 
 Haskell library to access the system's keyring to securely store passwords.
 

@@ -3,6 +3,7 @@ version:             0.1.0.0
 synopsis:            Keyring access
 description:         Access the system keyring to store and retrieve passwords
 homepage:            https://github.com/lunaryorn/haskell-keyring
+bug-reports:         https://github.com/lunaryorn/haskell-keyring/issues
 license:             MIT
 license-file:        LICENSE
 author:              Sebastian Wiesner

@@ -34,7 +34,7 @@ module System.Keyring.Types
        )
        where
 
-import Control.Exception (SomeException,Exception(..))
+import Control.Exception (Exception(..))
 import Data.Typeable (Typeable,cast)
 
 -- |A service which uses the keyring

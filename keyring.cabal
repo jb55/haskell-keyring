@@ -18,6 +18,7 @@ homepage:            https://github.com/lunaryorn/haskell-keyring
 bug-reports:         https://github.com/lunaryorn/haskell-keyring/issues
 license:             MIT
 license-file:        LICENSE
+extra-source-files:  README.rst
 author:              Sebastian Wiesner
 maintainer:          lunaryorn@gmail.com
 copyright:           (C) 2014 Sebastian Wiesner

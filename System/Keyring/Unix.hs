@@ -18,9 +18,12 @@
 -- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 -- THE SOFTWARE.
 
-{-# OPTIONS_HADDOCK hide #-}
-
 -- |Access to keyrings of Unix systems.
+--
+-- Currently this module only supports KWallet, via "System.Keyring.Unix.KDE".
+--
+-- This module and any of its submodules are not available on OS X.  See
+-- "System.Keyring.Darwin" for keyring support on OS X.
 module System.Keyring.Unix (getPassword,setPassword) where
 
 import qualified System.Keyring.Unix.KDE as KDE
@@ -40,13 +43,19 @@ provider = do
   where dummy = (\_ _ -> return Nothing, \_ _ _ -> return ())
 
 -- |@'getPassword' service username@ gets a password from the current keyring.
+--
+-- @username@ is the name of the user whose password to get.  @service@
+-- identifies the application which fetches the password.
 getPassword :: Service -> Username -> IO (Maybe Password)
 getPassword service username = do
   (get, _) <- provider
   get service username
 
--- |@'setPassword' service username password@ adds @password@ to the current
--- keyring.
+-- |@'setPassword' service username password@ adds @password@ for @username@
+-- to the current keyring.
+--
+-- @username@ is the name of the user whose password to set.  @service@
+-- identifies the application which sets the password.
 setPassword :: Service -> Username -> Password -> IO ()
 setPassword service username password = do
   (_, set) <- provider

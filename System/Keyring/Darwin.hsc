@@ -18,13 +18,21 @@
 -- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 -- THE SOFTWARE.
 
-{-# OPTIONS_HADDOCK hide #-}
-
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
--- |Access to the OS X Key chain
-module System.Keyring.Darwin (setPassword,getPassword) where
+-- |Access to the OS X Keychain.
+--
+-- This module is only available on OS X.  See "System.Keyring.Unix" for keyring
+-- support on other Unix systems.
+module System.Keyring.Darwin
+       (
+         -- * Keychain access
+         setPassword
+       , getPassword
+         -- * Error handling
+         KeychainError
+       ) where
 
 import System.Keyring.Types
 
@@ -100,16 +108,16 @@ foreign import ccall unsafe "Security/Security.h SecKeychainAddGenericPassword"
 
 -- C wrappers
 
-data KeychainException = KeychainError (Maybe String) OSStatus
+data KeychainError = KeychainError (Maybe String) OSStatus
                           deriving Typeable
 
-instance Show KeychainException where
+instance Show KeychainError where
   show (KeychainError Nothing status) =
     printf "Keychain access failed: status %s" status
   show (KeychainError (Just msg) status) =
     printf "Keychain access failed: %s (status %d)" msg status
 
-instance Exception KeychainException
+instance Exception KeychainError
 
 throwKeychainError :: OSStatus -> IO a
 throwKeychainError status = do
@@ -180,10 +188,11 @@ secKeychainAddGenericPassword service username password = do
                 nullPtr         -- Ignore the item
       if result == errSecSuccess then return () else throwKeychainError result
 
--- Public API
-
--- |@'setPassword' service username password@ stores a @password@ for a given
--- @username@ and @service@.
+-- |@'setPassword' service username password@ adds @password@ for @username@
+-- to the user's keychain.
+--
+-- @username@ is the name of the user whose password to set.  @service@
+-- identifies the application which sets the password.
 setPassword :: Service -> Username -> Password -> IO ()
 setPassword (Service service) (Username username) (Password password) =
   secKeychainAddGenericPassword service_bytes username_bytes password_bytes

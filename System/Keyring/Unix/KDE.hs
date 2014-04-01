@@ -20,10 +20,13 @@
 
 {-# LANGUAGE DeriveDataTypeable #-}
 
-{-# OPTIONS_HADDOCK hide #-}
-
--- |Access to the KDE keychain
-module System.Keyring.Unix.KDE (getPassword,setPassword) where
+-- |Access to KWallet.
+module System.Keyring.Unix.KDE
+       (
+         -- * KWallet access
+         getPassword,setPassword
+         -- * Error handling
+       , KWalletError(..)) where
 
 import System.Keyring.Types
 
@@ -40,8 +43,14 @@ import Network.DBus (DBusConnection,BusName(..)
 import Text.Printf (printf)
 
 data KWalletError = KWalletDBusError ErrorName (Maybe String)
+                    -- ^An error received over DBus error, with an error name
+                    -- and a message
                   | KWalletOperationError String
-                  | KWalletInvalidReturn [Type] [Type]
+                    -- ^A KWallet operation failed, with a message
+                  | KWalletInvalidReturn
+                    [Type]      -- ^The expected return signature
+                    [Type]      -- ^The actual return signature
+                    -- ^An unexpected return value was received.
                   deriving Typeable
 
 instance Show KWalletError where
@@ -127,6 +136,11 @@ withNetworkWallet appID action = withSessionBus openNetworkWallet
       (closeWallet connection appID)
       (action connection)
 
+-- |@'getPassword' service username@ gets a password from the user's network
+-- wallet.
+--
+-- @username@ is the name of the user whose password to get.  @service@
+-- identifies the application which fetches the password.
 getPassword :: Service -> Username -> IO (Maybe Password)
 getPassword (Service service) username = withNetworkWallet appID fetchPassword
   where
@@ -152,6 +166,12 @@ getPassword (Service service) username = withNetworkWallet appID fetchPassword
         [DBusString s] -> return (Just (Password (packedStringToString s)))
         _ -> throwInvalidReturn [SigString] reply
 
+
+-- |@'setPassword' service username password@ adds @password@ for @username@ to
+-- the user's network wallet.
+--
+-- @username@ is the name of the user whose password to set.  @service@
+-- identifies the application which sets the password.
 setPassword :: Service -> Username -> Password -> IO ()
 setPassword (Service service) username (Password password) =
   withNetworkWallet appID storePassword

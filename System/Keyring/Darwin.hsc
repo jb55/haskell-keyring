@@ -31,7 +31,7 @@ module System.Keyring.Darwin
          setPassword
        , getPassword
          -- * Error handling
-         KeychainError
+       , KeychainError
        ) where
 
 import System.Keyring.Types

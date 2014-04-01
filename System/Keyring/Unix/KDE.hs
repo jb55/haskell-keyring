@@ -27,109 +27,128 @@ module System.Keyring.Unix.KDE (getPassword,setPassword) where
 
 import System.Keyring.Types
 
-import Control.Exception (Exception,throwIO,bracket)
+import Control.Exception (Exception,throwIO,bracket,catch)
 import Control.Monad (void)
-import Data.Maybe (fromJust)
-import Data.Int (Int32,Int64)
+import Data.Int (Int32)
 import Data.Typeable (Typeable)
-import DBus
-import DBus.Client
-import Prelude hiding (error)
+import Network.DBus (DBusConnection,BusName(..)
+                    ,DBusCall(..),ObjectPath(..),Interface(..),Member(..)
+                    ,DBusTypeable(..),Type(..),DBusValue(..)
+                    ,DBusError(..),ErrorName(..)
+                    ,busGetSession,establish,authenticateWithRealUID,call
+                    ,returnBody,packedStringToString)
 import Text.Printf (printf)
 
-data KWalletException = KWalletException ErrorName String
+data KWalletException = KWalletDBusError ErrorName (Maybe String)
+                      | KWalletInvalidReturn [Type] [Type]
                       deriving Typeable
 
 instance Show KWalletException where
-  show (KWalletException name message) =
-    printf "KWallet error: %s: %s" (formatErrorName name) message
+  show (KWalletDBusError (ErrorName name) Nothing) =
+    printf "KWallet error: DBus error %s" name
+  show (KWalletDBusError (ErrorName name) (Just message)) =
+    printf "KWallet error: DBus error %s: %s" name message
+  show (KWalletInvalidReturn expected actual) =
+    printf "KWallet error: invalid return: expected %s, got %s" (show expected) (show actual)
 
 instance Exception KWalletException
 
-getKWalletKey :: Service -> Username -> String
-getKWalletKey (Service service) (Username username) = username ++ "@" ++ service
+throwInvalidReturn :: [Type] -> [DBusValue] -> IO a
+throwInvalidReturn expected actual =
+  throwIO (KWalletInvalidReturn expected (map toSignature actual))
 
-withSessionBus :: (Client -> IO a) -> IO a
-withSessionBus = bracket connectSession disconnect
+getKWalletKey :: AppID -> Username -> String
+getKWalletKey (AppID appID) (Username username) = username ++ "@" ++ appID
 
+withSessionBus :: (DBusConnection -> IO a) -> IO a
+withSessionBus actions = connectSession >>= actions
+  where connectSession = establish busGetSession authenticateWithRealUID
 
 newtype AppID = AppID String
 
-instance IsVariant AppID where
-  toVariant (AppID appID) = toVariant appID
-  fromVariant value = fmap AppID (fromVariant value)
+instance DBusTypeable AppID where
+  toSignature (AppID appID) = toSignature appID
+  toDBusValue (AppID appID) = toDBusValue appID
+  fromDBusValue value = fmap AppID (fromDBusValue value)
 
 newtype Wallet = Wallet Int32
 
-instance IsVariant Wallet where
-  toVariant (Wallet handle) = toVariant handle
-  fromVariant value = fmap Wallet (fromVariant value)
+instance DBusTypeable Wallet where
+  toSignature (Wallet appID) = toSignature appID
+  toDBusValue (Wallet appID) = toDBusValue appID
+  fromDBusValue value = fmap Wallet (fromDBusValue value)
 
-callKWalletD :: Client -> String -> [Variant] -> IO [Variant]
-callKWalletD client methodName args = do
-  result <- call client message
-  case result of
-    Left error -> throwIO (KWalletException
-                           (methodErrorName error)
-                           (methodErrorMessage error))
-    Right reply -> return (methodReturnBody reply)
-  where memberName = memberName_ methodName
-        path = objectPath_ "/modules/kwalletd"
-        interface = interfaceName_ "org.kde.KWallet"
-        busName = busName_ "org.kde.kwalletd"
-        message = (methodCall path interface memberName) {
-          methodCallDestination = Just busName,
-          methodCallBody = args}
+callKWalletD :: DBusConnection -> String -> [DBusValue] -> IO [DBusValue]
+callKWalletD connection methodName args = do
+  result <- catch (call connection busName message) (throwIO.wrapDBusError)
+  return (returnBody result)
+  where busName = BusName {unBusName = "org.kde.kwalletd"}
+        path = ObjectPath { unObjectPath = "/modules/kwalletd" }
+        interface = Interface { unInterface = "org.kde.KWallet" }
+        member = Member { unMember = methodName }
+        message = DBusCall { callPath = path
+                           , callInterface = Just interface
+                           , callMember = member
+                           , callBody = args}
+        wrapDBusError DBusError{errorName=name,errorBody=body} =
+          case body of
+            [DBusString errMsg] ->
+              KWalletDBusError name (Just (packedStringToString errMsg))
+            _ -> KWalletDBusError name Nothing
 
-openWallet :: Client -> String -> AppID -> IO Wallet
-openWallet client walletName appID = do
-  reply <- callKWalletD client "open" [toVariant walletName
-                                      , toVariant (0::Int64)
-                                      , toVariant appID]
-  return (fromJust (fromVariant (head reply)))
+openWallet :: DBusConnection -> String -> AppID -> IO Wallet
+openWallet connection walletName appID = do
+  reply <- callKWalletD connection "open" [toDBusValue walletName
+                                          ,DBusInt64 0
+                                          ,toDBusValue appID]
+  case reply of
+    [DBusInt32 handle] -> return (Wallet handle)
+    _ -> throwInvalidReturn [SigInt32] reply
 
-closeWallet :: Client -> AppID -> Wallet -> IO ()
-closeWallet client appID wallet =
-  void (callKWalletD client "close" [toVariant wallet
-                                    ,toVariant False
-                                    ,toVariant appID])
+closeWallet :: DBusConnection -> AppID -> Wallet -> IO ()
+closeWallet connection appID wallet =
+  void (callKWalletD connection "close" [toDBusValue wallet
+                                        ,toDBusValue False
+                                        ,toDBusValue appID])
 
-withNetworkWallet :: Service -> (Client -> Wallet -> IO a) -> IO a
-withNetworkWallet (Service service) action = withSessionBus openNetworkWallet
+withNetworkWallet :: AppID -> (DBusConnection -> Wallet -> IO a) -> IO a
+withNetworkWallet appID action = withSessionBus openNetworkWallet
   where
-    openNetworkWallet client = do
-      reply <- callKWalletD client "networkWallet" []
-      let name = fromJust (fromVariant (head reply))
-      runAction client name
-    runAction client name = bracket
-      (openWallet client name (AppID service))
-      (closeWallet client (AppID service))
-      (action client)
+    openNetworkWallet connection = do
+      reply <- callKWalletD connection "networkWallet" []
+      case reply of
+        [DBusString name] -> runAction connection (packedStringToString name)
+        _ -> throwInvalidReturn [SigString] reply
+    runAction connection name = bracket
+      (openWallet connection name appID)
+      (closeWallet connection appID)
+      (action connection)
 
 getPassword :: Service -> Username -> IO (Maybe Password)
-getPassword service username = withNetworkWallet service readPassword
+getPassword (Service service) username = withNetworkWallet appID readPassword
   where
-    key = getKWalletKey service username
-    readPassword client wallet = do
-      let (Service appID) = service
-      reply <- callKWalletD client "readPassword" [toVariant wallet
-                                                  ,toVariant "Passwords"
-                                                  ,toVariant key
-                                                  ,toVariant appID]
-      return $ case fromVariant (head reply) of
-        Nothing -> Nothing
-        Just [] -> Nothing
-        Just pw -> Just (Password pw)
+    appID = AppID service
+    key = getKWalletKey appID username
+    readPassword connection wallet = do
+      reply <- callKWalletD connection "readPassword" [toDBusValue wallet
+                                                      ,toDBusValue "Passwords"
+                                                      ,toDBusValue key
+                                                      ,toDBusValue appID]
+      case reply of
+        [DBusString s] -> return $ case packedStringToString s of
+          [] -> Nothing
+          pw -> Just (Password pw)
+        _ -> throwInvalidReturn [SigString] reply
 
 setPassword :: Service -> Username -> Password -> IO ()
-setPassword service username (Password password) =
-  withNetworkWallet service writePassword
+setPassword (Service service) username (Password password) =
+  withNetworkWallet appID writePassword
   where
-    key = getKWalletKey service username
-    writePassword client wallet = do
-      let (Service appID) = service
-      void $ callKWalletD client "writePassword" [toVariant wallet
-                                                 ,toVariant "Passwords"
-                                                 ,toVariant key
-                                                 ,toVariant password
-                                                 ,toVariant appID]
+    appID = AppID service
+    key = getKWalletKey appID username
+    writePassword connection wallet =
+      void $ callKWalletD connection "writePassword" [toDBusValue wallet
+                                                     ,toDBusValue "Passwords"
+                                                     ,toDBusValue key
+                                                     ,toDBusValue password
+                                                     ,toDBusValue appID]

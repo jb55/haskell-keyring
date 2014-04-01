@@ -62,6 +62,8 @@ type CFStringEncoding = #type CFStringEncoding
 type CFIndex = #type CFIndex
 type SecKeychainItemRef = Ptr ()
 type SecKeychainRef = Ptr ()
+
+-- |An internal OS X status code.
 type OSStatus = #type OSStatus
 
 #{enum OSStatus, ,
@@ -109,8 +111,20 @@ foreign import ccall unsafe "Security/Security.h SecKeychainAddGenericPassword"
 
 -- C wrappers
 
-data KeychainError = KeychainError (Maybe String) OSStatus
-                          deriving Typeable
+data KeychainError =
+  -- |@'KeychainError' message status@ denotes an error which occurred when
+  -- accessing Keychain.
+  --
+  -- @message@ is the human-readable error message reported by the system, and
+  -- @status@ is the internal status code.
+  --
+  -- See <https://developer.apple.com/library/mac/documentation/security/Reference/keychainservices/Reference/reference.html#//apple_ref/doc/uid/TP30000898-CH5g-CJBEABHG Keychain Services Result Codes>
+  -- for a list of all status codes.
+  --
+  -- Note that this error is /not/ thrown for the status codes
+  -- @errSecItemNotFound@ and @errSecAuthFailed@.  For these status codes,
+  -- 'getPassword' simply returns 'Nothing'.
+  KeychainError (Maybe String) OSStatus deriving Typeable
 
 instance Show KeychainError where
   show (KeychainError Nothing status) =

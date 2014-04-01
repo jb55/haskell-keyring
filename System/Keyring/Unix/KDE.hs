@@ -53,7 +53,7 @@ data KWalletError = KWalletDBusError ErrorName (Maybe String)
                     -- KWallet operation.
                     --
                     -- @message@ is a human-readable error message with details
-                    -- on the errpr.
+                    -- on the error.
                   | KWalletInvalidReturn [Type] [Type]
                     -- ^@'KWalletInvalidReturn' expected actual@ denotes an
                     -- unexpected return value from a DBus method call.

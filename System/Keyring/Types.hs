@@ -49,7 +49,7 @@ newtype Username = Username String
 -- |A password
 newtype Password = Password String
 
--- |Base type for Keyring exceptions
+-- |Base type for all exceptions of this library.
 data KeyringError = forall e . Exception e => KeyringError e
                   deriving Typeable
 
@@ -58,9 +58,12 @@ instance Show KeyringError where
 
 instance Exception KeyringError
 
--- |Exception indicating a missing backend.
-data KeyringMissingBackendError = KeyringMissingBackendError
-                              deriving (Typeable)
+data KeyringMissingBackendError =
+  -- |@'KeyringMissingBackendError'@ indicates that no keyring backend is
+  -- available for the current system and environment.
+  --
+  -- See "System.Keyring" for a list of supported keyring backends.
+  KeyringMissingBackendError deriving (Typeable)
 
 instance Show KeyringMissingBackendError where
   show KeyringMissingBackendError = "Keyring error: no backend available"

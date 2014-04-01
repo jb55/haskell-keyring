@@ -29,6 +29,7 @@ flag All
   default:             False
 
 library
+  ghc-options:         -Wall -Werror
   exposed-modules:     System.Keyring
   other-modules:       System.Keyring.Types
   build-depends:       base >=4.6 && <4.7

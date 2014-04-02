@@ -41,13 +41,13 @@ import qualified Data.ByteString.UTF8 as UTF8
 
 import Control.Exception (Exception(..),bracket,throwIO)
 import Control.Monad (liftM,when,void)
-import Data.ByteString
+import Data.ByteString (ByteString,useAsCStringLen,packCString,packCStringLen)
 import Data.Int (Int32, Int64)
 import Data.Typeable (Typeable,cast)
 import Data.Word (Word32)
-import Foreign.C
-import Foreign.Ptr
-import Foreign.Storable
+import Foreign.C (CString,CStringLen)
+import Foreign.Ptr (Ptr,nullPtr)
+import Foreign.Storable (peek)
 import Foreign.Marshal.Alloc (alloca,allocaBytes)
 import Text.Printf (printf)
 

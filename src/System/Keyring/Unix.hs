@@ -35,13 +35,6 @@ import Control.Monad (liftM)
 import System.Environment (getEnv)
 import System.IO.Error (isDoesNotExistError)
 
-getEnvSafe :: String -> IO (Maybe String)
-getEnvSafe env =
-  handleJust isVariableMissing (\_ -> return Nothing) (liftM Just (getEnv env))
-  where isVariableMissing e =
-          if isDoesNotExistError e then Just () else Nothing
-
-
 -- |The keyring provider to use.
 --
 -- Throws 'KeyringMissingBackendError' if no keyring backend is available on the
@@ -49,10 +42,13 @@ getEnvSafe env =
 provider :: IO (Service -> Username -> IO (Maybe Password)
                ,Service -> Username -> Password -> IO ())
 provider = do
-  desktop <- getEnvSafe "XDG_CURRENT_DESKTOP"
+  desktop <- handleJust (toMaybe.isDoesNotExistError) (const $ return Nothing)
+             (liftM Just (getEnv "XDG_CURRENT_DESKTOP"))
   case desktop of
     Just "KDE" -> return (KDE.getPassword, KDE.setPassword)
     _ -> throwIO KeyringMissingBackendError
+   where toMaybe True = Just ()
+         toMaybe False = Nothing
 
 -- |@'getPassword' service username@ gets a password from the current keyring.
 --

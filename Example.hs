@@ -28,14 +28,14 @@ import Control.Exception (catch)
 import Control.Monad (liftM)
 import Data.Version (showVersion)
 import System.Exit (exitFailure)
-import System.IO (hPutStrLn, hPutStr, hFlush, stderr, stdout)
+import System.IO (hPutStrLn,hPrint,hFlush,stderr,stdout)
 import Text.Printf (printf)
 
 import Paths_keyring (version)
 
 ask :: String -> IO String
 ask prompt = do
-  hPutStr stdout prompt
+  putStr prompt
   hFlush stdout
   getLine
 
@@ -44,7 +44,7 @@ service = Service "haskell-keyring-example"
 
 handleKeyringError :: KeyringError -> IO ()
 handleKeyringError exc =
-  hPutStrLn stderr (show exc) >> exitFailure
+  hPrint stderr exc >> exitFailure
 
 roundTrip :: Username -> IO ()
 roundTrip username = do

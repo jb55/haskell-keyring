@@ -1,3 +1,8 @@
+master (in development)
+=======================
+
+- Add support for GHC 7.8
+
 0.1.0.2 (Apr 11, 2014)
 ======================
 

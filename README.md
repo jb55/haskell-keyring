@@ -1,7 +1,9 @@
 haskell-keyring
 ===============
 
-[![hackage][badge-hackage]][hackage] [![license][badge-license]][license]
+[![travis][badge-travis]][travis]
+[![hackage][badge-hackage]][hackage]
+[![license][badge-license]][license]
 
 Haskell library to access the system's keyring to securely store passwords.
 
@@ -90,6 +92,8 @@ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+[badge-travis]: https://travis-ci.org/lunaryorn/haskell-keyring.svg?branch=master
+[travis]: https://travis-ci.org/lunaryorn/haskell-keyring
 [badge-hackage]: https://img.shields.io/hackage/v/keyring.svg?dummy
 [hackage]: https://hackage.haskell.org/package/keyring
 [badge-license]: https://img.shields.io/badge/license-MIT-green.svg?dummy

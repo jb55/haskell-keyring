@@ -1,3 +1,7 @@
 language: haskell
 ghc:
   - 7.6
+script:
+  - cabal configure --enable-tests --flags 'example allbackends'
+  - cabal build
+  - cabal test

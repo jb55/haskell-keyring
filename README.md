@@ -1,9 +1,9 @@
 haskell-keyring
 ===============
 
-[![travis][badge-travis]][travis]
 [![hackage][badge-hackage]][hackage]
 [![license][badge-license]][license]
+[![travis][badge-travis]][travis]
 
 Haskell library to access the system's keyring to securely store passwords.
 

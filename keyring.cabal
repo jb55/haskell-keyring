@@ -58,6 +58,7 @@ library
   if os(darwin)
      cpp-options:      -DDARWIN
      exposed-modules:  System.Keyring.Darwin
+     other-modules:    System.Keyring.Darwin.Native
      build-tools:      hsc2hs
      build-depends:    utf8-string >=0.3 && <0.4,
                        bytestring >=0.10 && <0.11

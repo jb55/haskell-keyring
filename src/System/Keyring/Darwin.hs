@@ -18,7 +18,6 @@
 -- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 -- THE SOFTWARE.
 
-{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
 -- |Access to the OS X Keychain.
@@ -36,80 +35,19 @@ module System.Keyring.Darwin
        ) where
 
 import System.Keyring.Types
+import System.Keyring.Darwin.Native
 
 import qualified Data.ByteString.UTF8 as UTF8
 
 import Control.Exception (Exception(..),bracket,throwIO)
-import Control.Monad (liftM,when,void)
+import Control.Monad (liftM,when,unless,void)
 import Data.ByteString (ByteString,useAsCStringLen,packCString,packCStringLen)
-import Data.Int (Int32, Int64)
 import Data.Typeable (Typeable,cast)
-import Data.Word (Word32)
 import Foreign.C (CString,CStringLen)
 import Foreign.Ptr (Ptr,nullPtr)
 import Foreign.Storable (peek)
 import Foreign.Marshal.Alloc (alloca,allocaBytes)
 import Text.Printf (printf)
-
--- C declarations
-
-#include <Security/Security.h>
-
-type UInt32 = #type UInt32
-type CFTypeRef = Ptr ()
-type CFStringRef = Ptr ()
-type CFStringEncoding = #type CFStringEncoding
-type CFIndex = #type CFIndex
-type SecKeychainItemRef = Ptr ()
-type SecKeychainRef = Ptr ()
-
--- |An internal OS X status code.
-type OSStatus = #type OSStatus
-
-#{enum OSStatus, ,
-  errSecSuccess = errSecSuccess,
-  errSecItemNotFound = errSecItemNotFound,
-  errSecAuthFailed = errSecAuthFailed}
-
-kCFStringEncodingUTF8 :: CFStringEncoding
-kCFStringEncodingUTF8 = #const kCFStringEncodingUTF8
-
-foreign import ccall unsafe "CoreFoundation/CoreFoundation.h CFRelease"
-  c_CFRelease :: CFTypeRef -> IO ()
-
-foreign import ccall unsafe "CoreFoundation/CoreFoundation.h CFStringGetMaximumSizeForEncoding"
-  c_CFStringGetMaximumSizeForEncoding :: CFIndex -> CFStringEncoding -> CFIndex
-
-foreign import ccall unsafe "CoreFoundation/CoreFoundation.h CFStringGetLength"
-  c_CFStringGetLength :: CFStringRef -> CFIndex
-
-foreign import ccall unsafe "CoreFoundation/CoreFoundation.h CFStringGetCString"
-  c_CFStringGetCString :: CFStringRef -> CString -> CFIndex -> CFStringEncoding
-                       -> IO Bool
-
-foreign import ccall unsafe "Security/Security.h SecCopyErrorMessageString"
-  c_SecCopyErrorMessageString :: OSStatus -> Ptr () -> IO CFStringRef
-
-foreign import ccall unsafe "Security/Security.h SecKeychainItemFreeContent"
-  c_SecKeychainItemFreeContent :: Ptr () -> CString -> IO OSStatus
-
-foreign import ccall unsafe "Security/Security.h SecKeychainFindGenericPassword"
-  c_SecKeychainFindGenericPassword :: CFTypeRef
-                                   -> UInt32 -> CString
-                                   -> UInt32 -> CString
-                                   -> Ptr UInt32 -> Ptr CString
-                                   -> Ptr SecKeychainItemRef
-                                   -> IO OSStatus
-
-foreign import ccall unsafe "Security/Security.h SecKeychainAddGenericPassword"
-  c_SecKeychainAddGenericPassword :: SecKeychainRef
-                                  -> UInt32 -> CString
-                                  -> UInt32 -> CString
-                                  -> UInt32 -> CString
-                                  -> Ptr SecKeychainItemRef
-                                  -> IO OSStatus
-
--- C wrappers
 
 data KeychainError =
   -- |@'KeychainError' message status@ denotes an error which occurred when
@@ -141,7 +79,7 @@ instance Exception KeychainError where
 throwKeychainError :: OSStatus -> IO a
 throwKeychainError status = do
   messageResult <- secKeychainCopyErrorMessageString status
-  let message = (fmap UTF8.toString messageResult)
+  let message = fmap UTF8.toString messageResult
   throwIO (KeychainError message status)
 
 secKeychainCopyErrorMessageString :: OSStatus -> IO (Maybe ByteString)
@@ -149,7 +87,7 @@ secKeychainCopyErrorMessageString status =
   bracket
   (c_SecCopyErrorMessageString status nullPtr)
   (\s -> when (s /= nullPtr) (c_CFRelease s))
-  (convertCFString)
+  convertCFString
   where
     convertCFString s | s == nullPtr = return Nothing
     convertCFString s = do
@@ -163,7 +101,7 @@ secKeychainCopyErrorMessageString status =
         else return Nothing
 
 secKeychainFindGenericPassword :: ByteString -> ByteString -> IO (Maybe ByteString)
-secKeychainFindGenericPassword service username = do
+secKeychainFindGenericPassword service username =
   useAsCStringLen service withService
   where
     withService c_service = useAsCStringLen username (withServiceAndUser c_service)
@@ -178,10 +116,10 @@ secKeychainFindGenericPassword service username = do
                    (fromIntegral c_user_l) c_user_b
                    password_l_buf password_buf
                    nullPtr      -- Ignore the item reference
-        (bracket (peek password_buf)
+        bracket (peek password_buf)
          (\pw -> when (pw /= nullPtr)
                  (void $ c_SecKeychainItemFreeContent nullPtr pw))
-         (handleResult result password_l_buf))
+         (handleResult result password_l_buf)
     handleResult :: OSStatus -> Ptr UInt32 -> CString -> IO (Maybe ByteString)
     handleResult result password_l_buf password_b = case result of
       _ | result == errSecSuccess -> do
@@ -192,7 +130,7 @@ secKeychainFindGenericPassword service username = do
       _ -> throwKeychainError result
 
 secKeychainAddGenericPassword :: ByteString -> ByteString -> ByteString -> IO ()
-secKeychainAddGenericPassword service username password = do
+secKeychainAddGenericPassword service username password =
   useAsCStringLen service withService
   where
     withService c_service = useAsCStringLen username (withServiceAndUser c_service)
@@ -205,7 +143,7 @@ secKeychainAddGenericPassword service username password = do
                 (fromIntegral c_user_l) c_user_b
                 (fromIntegral c_pw_l) c_pw_b
                 nullPtr         -- Ignore the item
-      if result == errSecSuccess then return () else throwKeychainError result
+      unless (result == errSecSuccess) (throwKeychainError result)
 
 -- |@'setPassword' service username password@ adds @password@ for @username@
 -- to the user's keychain.
@@ -228,6 +166,6 @@ setPassword (Service service) (Username username) (Password password) =
 getPassword :: Service -> Username -> IO (Maybe Password)
 getPassword (Service service) (Username username) = do
   password_bytes <- secKeychainFindGenericPassword service_bytes username_bytes
-  return (fmap Password (fmap (UTF8.toString) password_bytes))
+  return (fmap (Password . UTF8.toString) password_bytes)
   where service_bytes = UTF8.fromString service
         username_bytes = UTF8.fromString username

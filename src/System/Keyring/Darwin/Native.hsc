@@ -67,7 +67,7 @@ foreign import ccall unsafe "Security/Security.h SecCopyErrorMessageString"
 foreign import ccall unsafe "Security/Security.h SecKeychainItemFreeContent"
   c_SecKeychainItemFreeContent :: Ptr () -> CString -> IO OSStatus
 
-foreign import ccall unsafe "Security/Security.h SecKeychainFindGenericPassword"
+foreign import ccall safe "Security/Security.h SecKeychainFindGenericPassword"
   c_SecKeychainFindGenericPassword :: CFTypeRef
                                    -> UInt32 -> CString
                                    -> UInt32 -> CString
@@ -75,7 +75,7 @@ foreign import ccall unsafe "Security/Security.h SecKeychainFindGenericPassword"
                                    -> Ptr SecKeychainItemRef
                                    -> IO OSStatus
 
-foreign import ccall unsafe "Security/Security.h SecKeychainAddGenericPassword"
+foreign import ccall safe "Security/Security.h SecKeychainAddGenericPassword"
   c_SecKeychainAddGenericPassword :: SecKeychainRef
                                   -> UInt32 -> CString
                                   -> UInt32 -> CString

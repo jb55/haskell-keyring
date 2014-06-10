@@ -21,7 +21,7 @@ license-file:        LICENSE
 extra-source-files:  README.md,
                      CHANGES.md
 author:              Sebastian Wiesner
-maintainer:          lunaryorn@gmail.com
+maintainer:          swiesner@lunaryorn.com
 copyright:           (C) 2014 Sebastian Wiesner
 category:            System
 build-type:          Simple

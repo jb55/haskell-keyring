@@ -22,7 +22,7 @@ extra-source-files:  README.md,
                      CHANGES.md
 author:              Sebastian Wiesner
 maintainer:          swiesner@lunaryorn.com
-copyright:           (C) 2014 Sebastian Wiesner
+copyright:           (C) 2014, 2015 Sebastian Wiesner
 category:            System
 build-type:          Simple
 cabal-version:       >=1.10
@@ -52,7 +52,7 @@ library
   ghc-options:         -Wall
   exposed-modules:     System.Keyring
   other-modules:       System.Keyring.Types
-  build-depends:       base >=4.6 && <4.8
+  build-depends:       base >=4.6 && <4.9
   default-language:    Haskell2010
 
   if os(darwin)
@@ -60,7 +60,7 @@ library
      exposed-modules:  System.Keyring.Darwin
      other-modules:    System.Keyring.Darwin.Native
      build-tools:      hsc2hs
-     build-depends:    utf8-string >=0.3 && <0.4,
+     build-depends:    utf8-string >=1 && <1.1,
                        bytestring >=0.10 && <0.11
      frameworks:       Security CoreFoundation
 

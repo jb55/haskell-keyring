@@ -3,7 +3,7 @@ haskell-keyring
 
 [![Available on Hackage][badge-hackage]][hackage]
 [![License MIT][badge-license]][license]
-[![Build Status][badge-travis]][travis]
+[![Circle CI][badge-circleci]][circleci]
 
 Haskell library to access the system's keyring to securely store passwords.
 
@@ -73,7 +73,7 @@ Credits
 License
 -------
 
-Copyright (c) 2014 Sebastian Wiesner <swiesner@lunaryorn.com>
+Copyright (c) 2014, 2015 Sebastian Wiesner <swiesner@lunaryorn.com>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
@@ -92,8 +92,8 @@ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-[badge-travis]: https://travis-ci.org/lunaryorn/haskell-keyring.svg?branch=master
-[travis]: https://travis-ci.org/lunaryorn/haskell-keyring
+[badge-circleci]: https://circleci.com/gh/lunaryorn/haskell-keyring.svg?style=svg
+[circleci]: https://circleci.com/gh/lunaryorn/haskell-keyring
 [badge-hackage]: https://img.shields.io/hackage/v/keyring.svg?dummy
 [hackage]: https://hackage.haskell.org/package/keyring
 [badge-license]: https://img.shields.io/badge/license-MIT-green.svg?dummy

@@ -1,6 +1,7 @@
 haskell-keyring
 ===============
 
+![Unmaintained](https://img.shields.io/maintenance/yes/2015.svg)
 [![Available on Hackage][badge-hackage]][hackage]
 [![License MIT][badge-license]][license]
 [![Build Status][badge-travis]][travis]

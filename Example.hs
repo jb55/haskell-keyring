@@ -25,7 +25,6 @@ import System.Keyring
         KeyringError)
 
 import Control.Exception (catch)
-import Control.Monad (liftM)
 import Data.Version (showVersion)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, hPrint, hFlush, stderr, stdout)
@@ -61,7 +60,7 @@ roundTrip username = do
 
 tryGetPassword :: IO ()
 tryGetPassword = do
-  username <- liftM Username (ask "A username: ")
+  username <- fmap Username (ask "A username: ")
   password <- getPassword service username
   case password of
     (Just (Password pw)) -> putStr "Your Password: " >> putStrLn pw

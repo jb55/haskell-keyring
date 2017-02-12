@@ -1,0 +1,5 @@
+resolver: lts-8.0
+packages:
+  - '.'
+# Allow newer GHC
+compiler-check: newer-minor

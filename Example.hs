@@ -20,15 +20,15 @@
 
 module Main where
 
-import System.Keyring (Service(..),Username(..),Password(..)
-                      ,getPassword,setPassword
-                      ,KeyringError)
+import System.Keyring
+       (Service(..), Username(..), Password(..), getPassword, setPassword,
+        KeyringError)
 
 import Control.Exception (catch)
 import Control.Monad (liftM)
 import Data.Version (showVersion)
 import System.Exit (exitFailure)
-import System.IO (hPutStrLn,hPrint,hFlush,stderr,stdout)
+import System.IO (hPutStrLn, hPrint, hFlush, stderr, stdout)
 import Text.Printf (printf)
 
 import Paths_keyring (version)
@@ -43,19 +43,21 @@ service :: Service
 service = Service "haskell-keyring-example"
 
 handleKeyringError :: KeyringError -> IO ()
-handleKeyringError exc =
-  hPrint stderr exc >> exitFailure
+handleKeyringError exc = hPrint stderr exc >> exitFailure
 
 roundTrip :: Username -> IO ()
 roundTrip username = do
-   password <- ask "A password (VISIBLE): "
-   setPassword service username (Password password)
-   result <- getPassword service username
-   case result of
-     (Just (Password storedPassword)) -> do
-       let matching = if password == storedPassword then "ok" else "MISMATCH"
-       printf "Password in keyring: %s (%s)\n" storedPassword matching
-     Nothing -> hPutStrLn stderr "Error: Password NOT saved!" >> exitFailure
+  password <- ask "A password (VISIBLE): "
+  setPassword service username (Password password)
+  result <- getPassword service username
+  case result of
+    (Just (Password storedPassword)) -> do
+      let matching =
+            if password == storedPassword
+              then "ok"
+              else "MISMATCH"
+      printf "Password in keyring: %s (%s)\n" storedPassword matching
+    Nothing -> hPutStrLn stderr "Error: Password NOT saved!" >> exitFailure
 
 tryGetPassword :: IO ()
 tryGetPassword = do
